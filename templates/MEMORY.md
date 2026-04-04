@@ -1,0 +1,3 @@
+- [User Profile](user_profile.md) — role, background, tech setup, preferences
+- [Feedback & Interaction](feedback_interaction.md) — how the AI should behave, what works, what to avoid
+- [Active Projects](active_projects.md) — current work, statuses, goals, deadlines

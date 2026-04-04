@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PENDING=$(find ~/.claude/projects/*/memory/ -name '_digest-pending' 2>/dev/null | head -1); [ -n \"$PENDING\" ] && echo \"{\\\"systemMessage\\\":\\\"[Kontext] A memory digest is ready for processing.\\\"}\" || echo '{\"suppressOutput\":true}'",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

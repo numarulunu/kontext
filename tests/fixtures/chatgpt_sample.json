@@ -1,0 +1,64 @@
+[
+  {
+    "title": "Test Conversation",
+    "mapping": {
+      "aaa-root": {
+        "id": "aaa-root",
+        "parent": null,
+        "children": ["bbb-user"],
+        "message": null
+      },
+      "bbb-user": {
+        "id": "bbb-user",
+        "parent": "aaa-root",
+        "children": ["ccc-assistant"],
+        "message": {
+          "author": {"role": "user"},
+          "content": {"content_type": "text", "parts": ["I decided to launch my vocal coaching brand called Vocality. My rate is 50 EUR per session."]},
+          "create_time": 1712188800
+        }
+      },
+      "ccc-assistant": {
+        "id": "ccc-assistant",
+        "parent": "bbb-user",
+        "children": [],
+        "message": {
+          "author": {"role": "assistant"},
+          "content": {"content_type": "text", "parts": ["That sounds like a great plan! Let me help you structure that."]},
+          "create_time": 1712188860
+        }
+      }
+    }
+  },
+  {
+    "title": "Second Chat",
+    "mapping": {
+      "ddd-root": {
+        "id": "ddd-root",
+        "parent": null,
+        "children": ["eee-system"],
+        "message": null
+      },
+      "eee-system": {
+        "id": "eee-system",
+        "parent": "ddd-root",
+        "children": ["fff-user"],
+        "message": {
+          "author": {"role": "system"},
+          "content": {"content_type": "text", "parts": ["You are a helpful assistant."]},
+          "create_time": 1712275200
+        }
+      },
+      "fff-user": {
+        "id": "fff-user",
+        "parent": "eee-system",
+        "children": [],
+        "message": {
+          "author": {"role": "user"},
+          "content": {"content_type": "text", "parts": ["ok thanks"]},
+          "create_time": 1712275260
+        }
+      }
+    }
+  }
+]

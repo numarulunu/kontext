@@ -1,0 +1,24 @@
+__pycache__/
+pipeline/__pycache__/
+*.pyc
+.pytest_cache/
+venv/
+.venv/
+.env
+*.log
+dist/
+build/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# User data — never committed
+intake/*
+!intake/.gitkeep
+_chunks/
+_processed.json
+_processing-ready
+_digest-pending
+_audit-pending
+_conflicts.md
+_embeddings_cache.json
