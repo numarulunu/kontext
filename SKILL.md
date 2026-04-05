@@ -183,6 +183,24 @@ Interactive conflict resolution session.
 5. Apply decision. Log the resolution pattern to `feedback_conflict_patterns.md`.
 6. Mark conflict as RESOLVED in `_conflicts.md`.
 
+## MCP Tools (v5.0)
+
+Kontext now has a SQLite database backend. These MCP tools are the preferred way to read and write memory:
+
+| Tool | What it does | When to use |
+|---|---|---|
+| `kontext_search` | Semantic search across memory files | Before loading files -- find which ones are relevant |
+| `kontext_write` | Write an entry to database + auto-export markdown | Storing new facts, decisions, corrections |
+| `kontext_query` | Query entries by file, tier, grade, or text search | Checking what already exists before writing |
+| `kontext_relate` | Query the knowledge graph | Finding connections between entities |
+| `kontext_recent` | Get entries changed in last N hours | Checking what was recently updated |
+| `kontext_decay` | Run score decay on stale entries | Maintenance -- reduces grade of untouched entries |
+| `kontext_session` | Save or get session state | Bookmarking where you are |
+| `kontext_conflicts` | Detect, list, or resolve contradictions | When entries might contradict each other |
+| `kontext_reindex` | Re-index all files + embed entries | After bulk changes to memory files |
+
+**When MCP tools are available, prefer them over direct file edits.** The database is the source of truth. Markdown files are auto-generated exports for backward compatibility.
+
 ## Grading Reference
 
 | Grade | Meaning | Destination |

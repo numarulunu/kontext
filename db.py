@@ -72,6 +72,13 @@ class KontextDB:
                 created_at TEXT DEFAULT (datetime('now'))
             );
 
+            CREATE TABLE IF NOT EXISTS file_meta (
+                filename TEXT PRIMARY KEY,
+                file_type TEXT DEFAULT 'user',
+                description TEXT DEFAULT '',
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+
             CREATE INDEX IF NOT EXISTS idx_entries_file ON entries(file);
             CREATE INDEX IF NOT EXISTS idx_entries_tier ON entries(tier);
             CREATE INDEX IF NOT EXISTS idx_entries_grade ON entries(grade);
@@ -187,6 +194,44 @@ class KontextDB:
     def get_latest_session(self) -> dict | None:
         row = self.conn.execute("SELECT * FROM sessions ORDER BY id DESC LIMIT 1").fetchone()
         return dict(row) if row else None
+
+    def purge_old_sessions(self, keep: int = 20):
+        """Delete all but the most recent `keep` sessions."""
+        self._execute("""
+            DELETE FROM sessions WHERE id NOT IN (
+                SELECT id FROM sessions ORDER BY id DESC LIMIT ?
+            )
+        """, (keep,))
+
+    # --- File Metadata ---
+
+    def set_file_meta(self, filename: str, file_type: str = "user", description: str = ""):
+        self._execute("""
+            INSERT INTO file_meta (filename, file_type, description, updated_at)
+            VALUES (?, ?, ?, datetime('now'))
+            ON CONFLICT(filename) DO UPDATE SET
+                file_type = excluded.file_type,
+                description = excluded.description,
+                updated_at = datetime('now')
+        """, (filename, file_type, description))
+
+    def get_file_meta(self, filename: str) -> dict:
+        row = self.conn.execute(
+            "SELECT filename, file_type, description FROM file_meta WHERE filename = ?",
+            (filename,)
+        ).fetchone()
+        if row:
+            return {"filename": row[0], "file_type": row[1], "description": row[2]}
+        return {"filename": filename, "file_type": "user", "description": ""}
+
+    def get_all_file_meta(self) -> dict:
+        rows = self.conn.execute("SELECT filename, file_type, description FROM file_meta").fetchall()
+        return {r[0]: {"file_type": r[1], "description": r[2]} for r in rows}
+
+    def migrate_file_meta(self, file_meta_dict: dict):
+        """Bulk import from a dict of {filename: (file_type, description)}."""
+        for filename, (file_type, description) in file_meta_dict.items():
+            self.set_file_meta(filename, file_type, description)
 
     # --- Relations (knowledge graph) ---
 

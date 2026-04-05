@@ -195,3 +195,35 @@ def test_search_by_embedding(db):
     results = db.semantic_search(query_vec, limit=2)
     assert len(results) >= 1
     assert results[0]["fact"] == "Python programming language"
+
+
+# --- File Metadata ---
+
+def test_set_and_get_file_meta(db):
+    db.set_file_meta("user_identity.md", file_type="user", description="Core bio")
+    meta = db.get_file_meta("user_identity.md")
+    assert meta["file_type"] == "user"
+    assert meta["description"] == "Core bio"
+
+def test_get_file_meta_default(db):
+    meta = db.get_file_meta("unknown_file.md")
+    assert meta["file_type"] == "user"
+    assert meta["description"] == ""
+
+def test_get_all_file_meta(db):
+    db.set_file_meta("identity.md", file_type="user", description="Bio")
+    db.set_file_meta("goals.md", file_type="project", description="Projects")
+    all_meta = db.get_all_file_meta()
+    assert "identity.md" in all_meta
+    assert "goals.md" in all_meta
+    assert all_meta["identity.md"]["file_type"] == "user"
+
+
+def test_purge_old_sessions(db):
+    for i in range(10):
+        db.save_session(project=f"Project {i}", status=f"Status {i}")
+    db.purge_old_sessions(keep=3)
+    row = db._execute("SELECT COUNT(*) FROM sessions").fetchone()
+    assert row[0] == 3
+    latest = db.get_latest_session()
+    assert latest["project"] == "Project 9"
