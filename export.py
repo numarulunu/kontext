@@ -16,7 +16,7 @@ import argparse
 from pathlib import Path
 from db import KontextDB
 
-# File metadata (type and description) — stored in db eventually, hardcoded for now
+# File metadata fallback — primary source is file_meta table in database, this dict is the fallback
 _FILE_META = {
     "user_identity.md": ("user", "Core bio — name, age, location, tech, business"),
     "user_psychology.md": ("user", "How their mind works, patterns, trauma, coping"),
