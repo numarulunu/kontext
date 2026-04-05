@@ -106,7 +106,7 @@ Process pending conversation digest into memory updates.
    - Reads current memory files
    - Identifies NEW information worth persisting (project changes, decisions, struggles, goals, tools, relationship updates, health changes, AI feedback)
    - Returns structured proposals (does NOT edit files directly)
-4. Collect all proposals. Deduplicate. Resolve conflicts — most recently dated info wins, unless `feedback_conflict_patterns.md` has a matching pattern.
+4. Collect all proposals. Deduplicate. Resolve conflicts — most recently dated info wins. Use `kontext_conflicts` tool to check and resolve.
 5. Apply updates (Edit existing or Create new + update MEMORY.md index)
 6. **If a topic cluster emerges that doesn't fit any existing file, create a new file for it.**
 7. Do NOT duplicate existing info. Do NOT store ephemeral task details.
@@ -128,7 +128,7 @@ Process raw file intake (ChatGPT, Gemini, WhatsApp exports) into memory.
 7. Grade 5+ gets written. Grade 1-4 dropped.
 8. For each nugget grade 5+:
    - Matches existing → skip
-   - Contradicts existing → log to `_conflicts.md`. Auto-resolve only if `feedback_conflict_patterns.md` has matching pattern at 80%+ confidence.
+   - Contradicts existing → use `kontext_conflicts` MCP tool with action 'detect' to check, then log via the tool. Auto-resolve only if pattern confidence >= 80%.
    - New → write to appropriate file. Grade 8-10 → active section. Grade 5-7 → Historical section.
 9. **If nuggets cluster around a topic with no matching file, create a new file.**
 10. When a file approaches 3,000 tokens, compress lowest-graded entries first.
@@ -164,7 +164,7 @@ Quick health check — no changes, just reporting.
 3. Also check:
    - Does `_digest-pending` exist? Report date.
    - Does `_processing-ready` exist? Report metadata.
-   - Does `_conflicts.md` exist? Report pending count.
+   - Use `kontext_conflicts` MCP tool with action 'list' to check pending conflicts. Report count.
    - Does `_audit-pending` exist? Report date.
 4. Report total file count and MEMORY.md line count.
 
@@ -172,7 +172,7 @@ Quick health check — no changes, just reporting.
 
 Interactive conflict resolution session.
 
-1. Read `_conflicts.md` from the memory directory.
+1. Use `kontext_conflicts` MCP tool with action 'list' to get pending conflicts.
 2. If no pending conflicts, say so and exit.
 3. For each PENDING conflict, present:
    - What the conflict is (plain language)
@@ -181,7 +181,7 @@ Interactive conflict resolution session.
    - Source of each
 4. Ask user: keep A, keep B, merge, or skip?
 5. Apply decision. Log the resolution pattern to `feedback_conflict_patterns.md`.
-6. Mark conflict as RESOLVED in `_conflicts.md`.
+6. Use `kontext_conflicts` MCP tool with action 'resolve' to mark as resolved.
 
 ## MCP Tools (v5.0)
 
@@ -216,7 +216,7 @@ Kontext now has a SQLite database backend. These MCP tools are the preferred way
 - 3,000 token ceiling per file. When approaching, prefer splitting into sub-files over compressing.
 - Source-tag every new entry: `[ChatGPT 2024-08]`, `[Gemini 2025-01]`, `[Claude 2026-04]`, `[WhatsApp]`
 - Historical context is valuable data. Never delete — archive to Historical section.
-- Conflicts go to `_conflicts.md`. Auto-resolve only when pattern confidence >= 80%.
+- Conflicts go to the database via `kontext_conflicts` MCP tool. Auto-resolve only when pattern confidence >= 80%.
 - **Create new files aggressively.** 20 focused files > 5 bloated files. The MEMORY.md index handles discoverability.
 
 ## Memory Tiers
