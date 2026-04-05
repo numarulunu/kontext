@@ -211,6 +211,19 @@ class KontextDB:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_all_relations(self) -> list[dict]:
+        """Get every relation in the graph."""
+        rows = self.conn.execute("SELECT * FROM relations").fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_relation(self, relation_id: int):
+        """Delete a single relation by ID."""
+        self._execute("DELETE FROM relations WHERE id = ?", (relation_id,))
+
+    def execute(self, sql: str, params=()):
+        """Public SQL execute -- use for bulk operations like DELETE FROM."""
+        return self.conn.execute(sql, params)
+
     def query_graph(self, entity: str, depth: int = 2) -> list[dict]:
         """Traverse the knowledge graph up to depth hops from an entity."""
         visited = set()

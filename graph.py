@@ -18,6 +18,77 @@ _TOOL_PATTERN = re.compile(r"\b(Convertor|Transcriptor|AutoPipeline|UsageBOT|poc
 _PLATFORM_PATTERN = re.compile(r"\b(Preply|Stripe|GitHub|Skool|YouTube|Hetzner|Cloudflare|Revolut|Raiffeisen|ANAF|ElevenLabs|Freepik)\b")
 _PERSON_PATTERN = re.compile(r"\b(Ionut|Luiza|Vazquez|Lordu|Waru)\b")
 
+# Minimum entity length — single/two-char matches are always noise
+_MIN_ENTITY_LENGTH = 3
+
+# Comprehensive stopword set — words that appear capitalized at sentence start
+# but are not named entities. Covers English sentence starters, common nouns,
+# domain false positives, and Romanian noise words.
+_STOPWORDS = {
+    # Articles, pronouns, determiners
+    "the", "this", "that", "these", "those", "its", "his", "her", "our", "your", "their",
+    "some", "any", "all", "each", "every", "both", "few", "many", "much", "most",
+    # Question words
+    "who", "what", "when", "where", "which", "how", "why", "whom", "whose",
+    # Conjunctions and transitions
+    "and", "but", "or", "nor", "yet", "so", "for", "also", "too", "then",
+    "however", "therefore", "meanwhile", "furthermore", "moreover", "nevertheless",
+    "otherwise", "instead", "likewise", "accordingly", "consequently", "hence",
+    "thus", "still", "besides", "although", "though", "unless", "since", "because",
+    "while", "whereas", "whether", "after", "before", "during", "until", "once",
+    # Common verbs (sentence starters)
+    "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
+    "do", "does", "did", "will", "would", "shall", "should", "may", "might",
+    "can", "could", "must", "need", "dare", "let", "make", "made", "keep",
+    "kept", "see", "saw", "seen", "get", "got", "set", "run", "ran", "add",
+    "added", "put", "take", "took", "taken", "come", "came", "give", "gave",
+    "try", "tried", "use", "used", "uses", "using", "know", "knew", "think",
+    "say", "said", "tell", "told", "ask", "asked", "want", "wanted", "move",
+    "moved", "start", "started", "stop", "stopped", "check", "checked",
+    "built", "created", "moved", "applied", "removed", "fixed", "updated",
+    # Common nouns that appear capitalized at sentence start
+    "air", "anti", "fix", "phase", "module", "modules", "authority", "system",
+    "systems", "pattern", "patterns", "section", "sections", "entry", "entries",
+    "tool", "tools", "project", "projects", "step", "steps", "rule", "rules",
+    "note", "notes", "update", "updates", "change", "changes", "new", "old",
+    "file", "files", "line", "lines", "code", "data", "list", "item", "items",
+    "value", "values", "key", "keys", "part", "parts", "way", "ways", "end",
+    "time", "times", "day", "days", "week", "month", "year", "date", "number",
+    "test", "tests", "error", "errors", "issue", "issues", "bug", "bugs",
+    "feature", "features", "option", "options", "mode", "field", "fields",
+    "page", "pages", "link", "links", "path", "paths", "port", "log", "logs",
+    "fact", "facts", "source", "sources", "tier", "tiers", "grade", "grades",
+    "active", "historical", "status", "version", "type", "name", "names",
+    "location", "bank", "result", "results", "output", "input", "config",
+    "default", "defaults", "setting", "settings", "format", "table", "tables",
+    "query", "queries", "model", "models", "class", "method", "function",
+    "script", "scripts", "command", "commands", "server", "client", "app",
+    "build", "release", "deploy", "install", "package", "import", "export",
+    "window", "view", "state", "event", "events", "action", "actions",
+    "user", "users", "account", "session", "token", "request", "response",
+    "message", "messages", "text", "string", "content", "context", "scope",
+    "index", "count", "size", "total", "max", "min", "current", "next",
+    "last", "first", "second", "third", "main", "base", "core", "top",
+    "bottom", "left", "right", "back", "front", "full", "empty", "open",
+    "close", "true", "false", "null", "none", "other", "same", "different",
+    "only", "just", "even", "already", "always", "never", "often", "sometimes",
+    "here", "there", "now", "about", "above", "below", "between", "through",
+    "with", "without", "into", "from", "over", "under", "down", "not", "very",
+    "more", "less", "well", "just", "really", "quite", "rather", "almost",
+    "enough", "too", "also", "either", "neither", "per", "via", "like",
+    # Domain false positives from actual Kontext data
+    "apex", "prompt", "architect", "arezzo", "automation", "net", "memory",
+    "digest", "intake", "snapshot", "backlog", "changelog", "pipeline",
+    "hook", "hooks", "sync", "batch", "queue", "cache", "thread", "threads",
+    "agent", "agents", "task", "tasks", "skill", "skills", "plan", "plans",
+    "spec", "specs", "design", "audit", "review", "debug", "refactor",
+    # Romanian noise words
+    "din", "care", "sunt", "este", "pentru", "sau", "dar", "mai", "lui",
+    "cum", "cel", "cea", "ale", "ori", "fie", "nici", "deja", "doar",
+    "prin", "spre", "sub", "ala", "asta", "aia", "aici", "acum", "apoi",
+    "daca", "cand", "unde", "cine", "cat", "tot", "alta", "alte",
+}
+
 # Relation extraction patterns
 _RELATION_PATTERNS = [
     (re.compile(r"(\w+)\s+(?:uses?|using)\s+(\w+)", re.I), "uses"),
@@ -27,11 +98,11 @@ _RELATION_PATTERNS = [
     (re.compile(r"(\w+)\s+(?:pays?|payment)\s+(?:via|through)\s+(\w+)", re.I), "pays_via"),
 ]
 
-
 def extract_entities(text: str) -> list[str]:
     """Extract named entities from text using pattern matching."""
     entities = set()
 
+    # Known entities (tools, platforms, people) always pass — no filtering
     for pattern in [_TOOL_PATTERN, _PLATFORM_PATTERN, _PERSON_PATTERN]:
         for match in pattern.finditer(text):
             entities.add(match.group(1))
@@ -39,10 +110,14 @@ def extract_entities(text: str) -> list[str]:
     # Also grab capitalized proper nouns not already matched
     for match in _PROPER_NOUN.finditer(text):
         word = match.group(1)
-        if word.lower() not in {"the", "this", "that", "when", "what", "where", "how", "grade",
-                                 "active", "historical", "status", "version", "type", "name",
-                                 "location", "bank", "uses", "built", "created"}:
-            entities.add(word)
+        # Skip if too short, in stopwords, or ALL-CAPS abbreviation
+        if len(word) < _MIN_ENTITY_LENGTH:
+            continue
+        if word.lower() in _STOPWORDS:
+            continue
+        if word.isupper():
+            continue
+        entities.add(word)
 
     return sorted(entities)
 
@@ -85,6 +160,28 @@ def build_graph(db: KontextDB) -> int:
 
     return count
 
+def prune_graph(db: KontextDB) -> int:
+    """Remove relations where either entity is a stopword or too short. Returns count removed."""
+    relations = db.get_all_relations()
+    removed = 0
+
+    for rel in relations:
+        a = rel["entity_a"]
+        b = rel["entity_b"]
+        if (len(a) < _MIN_ENTITY_LENGTH or a.lower() in _STOPWORDS or
+                len(b) < _MIN_ENTITY_LENGTH or b.lower() in _STOPWORDS):
+            db.delete_relation(rel["id"])
+            removed += 1
+
+    return removed
+
+
+def rebuild_graph(db: KontextDB) -> int:
+    """Clear all relations and rebuild the graph with current quality filters. Returns new count."""
+    db.execute("DELETE FROM relations")
+    db.conn.commit()
+    return build_graph(db)
+
 
 def query_connections(db: KontextDB, entity: str, depth: int = 2) -> list[dict]:
     """Find everything connected to an entity up to N hops."""
@@ -104,3 +201,4 @@ def describe_entity(db: KontextDB, entity: str) -> str:
         lines.append(f"  {r['relation']} -> **{other}** ({conf}%)")
 
     return "\n".join(lines)
+
