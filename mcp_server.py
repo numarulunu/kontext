@@ -322,6 +322,20 @@ _TOOL_DEFINITIONS = [
             "required": ["action"],
         },
     },
+    {
+        "name": "kontext_conflicts",
+        "description": "Detect and manage memory conflicts. Use detect to find contradictions, list to see pending, resolve to mark resolved.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "description": "detect, list, or resolve", "enum": ["detect", "list", "resolve"]},
+                "file": {"type": "string", "description": "Filter by file (for detect)"},
+                "conflict_id": {"type": "integer", "description": "Conflict ID (for resolve)"},
+                "resolution": {"type": "string", "description": "Resolution text (for resolve)"},
+            },
+            "required": ["action"],
+        },
+    },
 ]
 
 
@@ -532,6 +546,39 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                     return _mcp_error(req_id, "action must be save or get")
             except Exception as e:
                 return _mcp_error(req_id, f"kontext_session failed: {e}")
+
+
+        elif tool_name == "kontext_conflicts":
+            try:
+                db = _get_db()
+                action = args.get("action", "")
+                if action == "detect":
+                    conflicts = db.detect_conflicts(file=args.get("file"))
+                    if not conflicts:
+                        return _mcp_result(req_id, "No conflicts detected.")
+                    clines = [f"**Detected {len(conflicts)} potential conflict(s):**\n"]
+                    for c in conflicts:
+                        clines.append(f"- [{c['file']}] \"{c['entry_a']}\" vs \"{c['entry_b']}\" (shared: {', '.join(c['shared_words'])})")
+                    return _mcp_result(req_id, "\n".join(clines))
+                elif action == "list":
+                    pending = db.get_pending_conflicts()
+                    if not pending:
+                        return _mcp_result(req_id, "No pending conflicts.")
+                    clines = [f"**{len(pending)} pending conflict(s):**\n"]
+                    for c in pending:
+                        clines.append(f"- #{c['id']} [{c['file']}] \"{c['entry_a']}\" vs \"{c['entry_b']}\" ({c['created_at']})")
+                    return _mcp_result(req_id, "\n".join(clines))
+                elif action == "resolve":
+                    conflict_id = args.get("conflict_id")
+                    resolution = args.get("resolution", "")
+                    if not conflict_id:
+                        return _mcp_error(req_id, "conflict_id is required for resolve")
+                    db.resolve_conflict(conflict_id, resolution)
+                    return _mcp_result(req_id, f"Conflict #{conflict_id} resolved.")
+                else:
+                    return _mcp_error(req_id, "action must be detect, list, or resolve")
+            except Exception as e:
+                return _mcp_error(req_id, f"kontext_conflicts failed: {e}")
 
 
     return {

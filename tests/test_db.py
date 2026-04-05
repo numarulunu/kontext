@@ -157,3 +157,18 @@ def test_tier_transitions_after_decay(db):
     entry_hist = db.get_entry(id_hist)
     assert entry_hist["grade"] == pytest.approx(7.8)
     assert entry_hist["tier"] == "historical"
+
+
+def test_detect_conflict(db):
+    db.add_entry(file="identity.md", fact="Active students: 27", source="[Claude 2026-03]", grade=9, tier="active")
+    db.add_entry(file="identity.md", fact="Active students: 24", source="[Claude 2026-04]", grade=9, tier="active")
+    conflicts = db.detect_conflicts(file="identity.md")
+    assert len(conflicts) >= 1
+    assert "students" in conflicts[0]["entry_a"].lower() or "students" in conflicts[0]["entry_b"].lower()
+
+
+def test_detect_conflict_no_false_positives(db):
+    db.add_entry(file="identity.md", fact="Name: Ionut Rosu", source="[Claude 2026-04]", grade=10, tier="active")
+    db.add_entry(file="identity.md", fact="Location: Constanta", source="[Claude 2026-04]", grade=9, tier="active")
+    conflicts = db.detect_conflicts(file="identity.md")
+    assert len(conflicts) == 0

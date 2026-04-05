@@ -259,6 +259,47 @@ class KontextDB:
             "SELECT * FROM conflicts WHERE status = 'pending' ORDER BY created_at DESC"
         ).fetchall()]
 
+    def detect_conflicts(self, file: str = None) -> list[dict]:
+        """Find potential contradictions: entries in the same file with overlapping keywords but different values."""
+        sql = "SELECT id, file, fact FROM entries WHERE tier != 'cold'"
+        params = []
+        if file:
+            sql += " AND file = ?"
+            params.append(file)
+        sql += " ORDER BY file, id"
+
+        entries = self.conn.execute(sql, params).fetchall()
+        conflicts = []
+        seen_pairs = set()
+
+        by_file = {}
+        for e in entries:
+            by_file.setdefault(e[1], []).append(e)
+
+        noise_words = {"the", "and", "for", "with", "from", "that", "this", "was", "are", "has", "have", "been"}
+
+        for file_name, file_entries in by_file.items():
+            for i, e1 in enumerate(file_entries):
+                words_1 = {w.lower() for w in e1[2].split() if len(w) >= 4 and w.lower() not in noise_words}
+                for e2 in file_entries[i + 1:]:
+                    pair_key = (min(e1[0], e2[0]), max(e1[0], e2[0]))
+                    if pair_key in seen_pairs:
+                        continue
+                    words_2 = {w.lower() for w in e2[2].split() if len(w) >= 4 and w.lower() not in noise_words}
+                    shared = words_1 & words_2
+                    if len(shared) >= 2 and e1[2] != e2[2]:
+                        seen_pairs.add(pair_key)
+                        self.add_conflict(file=file_name, entry_a=e1[2], entry_b=e2[2])
+                        conflicts.append({
+                            "file": file_name,
+                            "entry_a": e1[2],
+                            "entry_b": e2[2],
+                            "entry_a_id": e1[0],
+                            "entry_b_id": e2[0],
+                            "shared_words": sorted(shared),
+                        })
+        return conflicts
+
     def resolve_conflict(self, conflict_id: int, resolution: str):
         self._execute(
             "UPDATE conflicts SET status = 'resolved', resolution = ?, resolved_at = datetime('now') WHERE id = ?",
