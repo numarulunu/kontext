@@ -15,11 +15,20 @@ Protocol: Claude Code MCP (stdio transport)
 """
 
 import json
+import logging
 import os
 import sys
 import re
 from pathlib import Path
 from datetime import datetime
+
+# Set up file logging — every write, every failure, every tool call
+_LOG_FILE = Path(__file__).parent / "_kontext.log"
+_logger = logging.getLogger("kontext")
+_logger.setLevel(logging.INFO)
+_file_handler = logging.FileHandler(str(_LOG_FILE), encoding="utf-8")
+_file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+_logger.addHandler(_file_handler)
 
 # Lazy imports — only load heavy libs when needed
 _model = None
@@ -36,6 +45,7 @@ def _get_db():
     if _db_instance is None:
         from db import KontextDB
         _db_instance = KontextDB()
+        _logger.info(f"DB INITIALIZED: {_db_instance.db_path}")
     return _db_instance
 
 
@@ -409,8 +419,10 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                         vec = model.encode(entry["fact"]).tolist()
                         db.store_embedding(entry["id"], vec)
                         embedded += 1
+                _logger.info(f"REINDEX: {len(entries)} files, {embedded} entries embedded")
                 return _mcp_result(req_id, f"Re-indexed {len(entries)} files. Embedded {embedded} entries in DB.")
             except Exception:
+                _logger.info(f"REINDEX: {len(entries)} files (no DB embedding)")
                 return _mcp_result(req_id, f"Re-indexed {len(entries)} memory files.")
         # --- Database-backed tools ---
 
@@ -443,8 +455,10 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                 (memory_dir / file).write_text(md_content, encoding="utf-8")
                 export_memory_index(db, memory_dir)
 
+                _logger.info(f"WRITE: {file} | {fact[:80]} | grade={grade} tier={tier}")
                 return _mcp_result(req_id, f"Wrote entry #{entry_id} to {file} (grade {grade}, {tier}). Exported to markdown.")
             except Exception as e:
+                _logger.error(f"WRITE FAILED: {e}")
                 return _mcp_error(req_id, f"kontext_write failed: {e}")
 
         elif tool_name == "kontext_query":
@@ -468,6 +482,7 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                 for e in qresults:
                     lines.append(f"- [{e['file']}] (grade {e['grade']}, {e['tier']}) {e['fact']}")
 
+                _logger.info(f"QUERY: {len(qresults)} results | file={args.get('file')} search={args.get('search','')[:40]}")
                 return _mcp_result(req_id, "\n".join(lines))
             except Exception as e:
                 return _mcp_error(req_id, f"kontext_query failed: {e}")
@@ -530,6 +545,7 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                 export_all(db, memory_dir)
                 export_memory_index(db, memory_dir)
 
+                _logger.info(f"DECAY: threshold={days_threshold}d amount={decay_amount}")
                 return _mcp_result(req_id, f"Decay applied (threshold: {days_threshold} days, amount: {decay_amount}). All files re-exported.")
             except Exception as e:
                 return _mcp_error(req_id, f"kontext_decay failed: {e}")
@@ -546,6 +562,7 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                         next_step=args.get("next_step", ""),
                         key_decisions=args.get("key_decisions", ""),
                     )
+                    _logger.info(f"SESSION SAVE: project={args.get('project','')} status={args.get('status','')[:60]}")
                     return _mcp_result(req_id, "Session state saved.")
 
                 elif action == "get":
@@ -577,6 +594,7 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                     conflicts = db.detect_conflicts(file=args.get("file"))
                     if not conflicts:
                         return _mcp_result(req_id, "No conflicts detected.")
+                    _logger.info(f"CONFLICTS: detected {len(conflicts)} in file={args.get('file','all')}")
                     clines = [f"**Detected {len(conflicts)} potential conflict(s):**\n"]
                     for c in conflicts:
                         clines.append(f"- [{c['file']}] \"{c['entry_a']}\" vs \"{c['entry_b']}\" (shared: {', '.join(c['shared_words'])})")
@@ -623,6 +641,7 @@ def main():
     entries = index_memories(memory_dir)
     print(f"Indexed {len(entries)} memory files.", file=sys.stderr)
     print(f"Ready.", file=sys.stderr)
+    _logger.info(f"MCP SERVER STARTED: {memory_dir}, {len(entries)} files indexed")
 
     # MCP stdio loop
     for line in sys.stdin:
