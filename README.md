@@ -37,11 +37,11 @@ Next session: Claude has forgotten everything. You start over.
 
 ## The Solution
 
-Kontext stores what Claude needs to know about you in plain text files. Before responding, Claude checks which files are relevant, reads them silently, and answers as if it's known you for months.
+Kontext stores what Claude needs to know about you in a SQLite database backed by a knowledge graph. Before responding, Claude uses MCP tools to query relevant context and answers as if it's known you for months.
 
 > *"Your history is my edge. Starve me and I'm generic."*
 
-No database. No API keys. No cloud service. Just text files and a librarian that knows when to read them.
+SQLite database as the source of truth. Knowledge graph for entity relations. Semantic search. Score decay for stale entries. Flat markdown files auto-generated for backward compatibility.
 
 <br>
 
@@ -430,20 +430,16 @@ Runs locally on your machine. No cloud. No API calls. Embeddings are cached — 
 kontext/
   setup.sh                 One-command installer
   install_hooks.py         Cross-session sync setup
-  mcp_server.py            Semantic search MCP server (optional)
+  mcp_server.py            MCP server — semantic search + database tools
+  db.py                    SQLite database — CRUD, graph, sessions, decay
+  migrate.py               Import flat memory files into database
+  export.py                Export database to backward-compatible markdown
+  graph.py                 Knowledge graph — entity extraction and relations
+  kontext.db               SQLite database (auto-created on first use)
   SKILL.md                 /kontext skill for Claude Code
   templates/               Starter files for new users
-    CLAUDE-protocol.md     Retrieval + update instructions
-    MEMORY.md              Starter index
-    memory/                Template memory files
   pipeline/                Intake processing engine
-    extract.py             Parse raw exports
-    parsers.py             ChatGPT, Gemini, WhatsApp
-    chunker.py             Smart conversation splitting
-    grading.py             Score messages 1-10
-    conflicts.py           Detection + pattern learning
-    brainstorm.py          Health reports
-  tests/                   59 tests, all passing
+  tests/                   82 tests, all passing
 ```
 
 <br>
