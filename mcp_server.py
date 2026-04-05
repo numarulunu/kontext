@@ -365,7 +365,7 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
             "id": req_id,
             "result": {
                 "protocolVersion": "2024-11-05",
-                "serverInfo": {"name": "kontext-memory", "version": "2.0.0"},
+                "serverInfo": {"name": "kontext-memory", "version": "5.0.0"},
                 "capabilities": {"tools": {"listChanged": False}},
             },
         }
