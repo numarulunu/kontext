@@ -131,16 +131,26 @@ def save_settings(settings: dict):
         json.dump(settings, f, indent=2, ensure_ascii=False)
 
 
-def hook_already_installed(settings: dict) -> bool:
-    """Check if the Kontext hook is already installed (in any hook type)."""
-    hooks = settings.get("hooks", {})
-    # Check both old (PreToolUse) and new (UserPromptSubmit) locations
-    for hook_type in ["UserPromptSubmit", "PreToolUse"]:
-        for group in hooks.get(hook_type, []):
-            for hook in group.get("hooks", []):
-                cmd = hook.get("command", "")
-                if KONTEXT_HOOK_MARKER in cmd:
-                    return True
+def _userpromptsubmit_installed(settings: dict) -> bool:
+    """Check if the Kontext UserPromptSubmit (sync) hook is already installed."""
+    for group in settings.get("hooks", {}).get("UserPromptSubmit", []):
+        for hook in group.get("hooks", []):
+            if KONTEXT_HOOK_MARKER in hook.get("command", ""):
+                return True
+    # Also check legacy PreToolUse location
+    for group in settings.get("hooks", {}).get("PreToolUse", []):
+        for hook in group.get("hooks", []):
+            if KONTEXT_HOOK_MARKER in hook.get("command", ""):
+                return True
+    return False
+
+
+def _agent_hook_installed(settings: dict, hook_type: str) -> bool:
+    """Check if a Kontext agent hook is already installed for the given event type."""
+    for group in settings.get("hooks", {}).get(hook_type, []):
+        for hook in group.get("hooks", []):
+            if "kontext" in hook.get("prompt", "").lower():
+                return True
     return False
 
 
@@ -155,7 +165,12 @@ def install():
 
     settings = load_settings()
 
-    if hook_already_installed(settings):
+    # Check each hook type independently
+    sync_installed = _userpromptsubmit_installed(settings)
+    postcompact_installed = _agent_hook_installed(settings, "PostCompact")
+    sessionend_installed = _agent_hook_installed(settings, "SessionEnd")
+
+    if sync_installed and postcompact_installed and sessionend_installed:
         print("  Kontext hooks already installed. Nothing to do.")
         return
 
@@ -163,12 +178,16 @@ def install():
     if "hooks" not in settings:
         settings["hooks"] = {}
 
-    # Add all three Kontext hooks
-    for hook_type, hook_data, label in [
-        ("UserPromptSubmit", KONTEXT_HOOK, "Cross-session sync"),
-        ("PostCompact", KONTEXT_POSTCOMPACT, "Post-compression memory save"),
-        ("SessionEnd", KONTEXT_SESSIONEND, "End-of-session memory sweep"),
-    ]:
+    # Add only the hooks that are missing
+    to_install = []
+    if not sync_installed:
+        to_install.append(("UserPromptSubmit", KONTEXT_HOOK, "Cross-session sync"))
+    if not postcompact_installed:
+        to_install.append(("PostCompact", KONTEXT_POSTCOMPACT, "Post-compression memory save"))
+    if not sessionend_installed:
+        to_install.append(("SessionEnd", KONTEXT_SESSIONEND, "End-of-session memory sweep"))
+
+    for hook_type, hook_data, label in to_install:
         if hook_type not in settings["hooks"]:
             settings["hooks"][hook_type] = []
         settings["hooks"][hook_type].append(hook_data)
