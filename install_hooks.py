@@ -4,7 +4,7 @@ install_hooks.py — Safely inject Kontext hooks into Claude Code settings.json
 Handles:
 - Creating settings.json if it doesn't exist
 - Adding hooks section if missing
-- Adding PreToolUse hook for cross-session sync
+- Adding UserPromptSubmit hook for cross-session sync
 - Never overwrites existing hooks — only adds if missing
 - Creates a backup before modifying
 
