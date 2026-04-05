@@ -9,6 +9,7 @@ Flat markdown files are generated FROM this database, not the other way around.
 import sqlite3
 import os
 from datetime import datetime, timezone
+from collections import deque
 from pathlib import Path
 
 
@@ -157,20 +158,22 @@ class KontextDB:
     def get_recent_changes(self, hours: int = 24) -> list[dict]:
         return [dict(r) for r in self.conn.execute(
             "SELECT * FROM entries WHERE updated_at >= datetime('now', ? || ' hours') ORDER BY updated_at DESC",
-            (f"-{hours}",)
+            (f"-{int(hours)}",)
         ).fetchall()]
 
     def decay_scores(self, days_threshold: int = 60, decay_amount: float = 0.5):
         """Reduce grade of entries not accessed in days_threshold days. Minimum grade: 1."""
         self._execute("""
-            UPDATE entries SET grade = MAX(1, grade - ?), tier = CASE
-                WHEN grade - ? < 5 THEN 'cold'
-                WHEN grade - ? < 8 THEN 'historical'
-                ELSE tier
-            END
+            UPDATE entries SET
+                grade = MAX(1, grade - ?),
+                tier = CASE
+                    WHEN MAX(1, grade - ?) < 5 THEN 'cold'
+                    WHEN MAX(1, grade - ?) < 8 THEN 'historical'
+                    ELSE tier
+                END
             WHERE last_accessed < datetime('now', ? || ' days')
             AND grade > 1
-        """, (decay_amount, decay_amount, decay_amount, f"-{days_threshold}"))
+        """, (decay_amount, decay_amount, decay_amount, f"-{int(days_threshold)}"))
 
     # --- Sessions ---
 
@@ -212,10 +215,10 @@ class KontextDB:
         """Traverse the knowledge graph up to depth hops from an entity."""
         visited = set()
         results = []
-        queue = [(entity, 0)]
+        queue = deque([(entity, 0)])
 
         while queue:
-            current, d = queue.pop(0)
+            current, d = queue.popleft()
             if current in visited or d > depth:
                 continue
             visited.add(current)
@@ -248,6 +251,12 @@ class KontextDB:
             "UPDATE conflicts SET status = 'resolved', resolution = ?, resolved_at = datetime('now') WHERE id = ?",
             (resolution, conflict_id)
         )
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
     def close(self):
         self.conn.close()

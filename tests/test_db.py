@@ -12,7 +12,9 @@ from db import KontextDB
 @pytest.fixture
 def db(tmp_path):
     db_path = tmp_path / "test.db"
-    return KontextDB(str(db_path))
+    db = KontextDB(str(db_path))
+    yield db
+    db.close()
 
 
 def test_create_tables(db):
@@ -135,3 +137,23 @@ def test_query_graph(db):
         entities_found.add(r["entity_b"])
     assert "Stripe" in entities_found
     assert "Payments" in entities_found
+
+
+
+def test_tier_transitions_after_decay(db):
+    """Grade 5 decayed by 0.5 should become 'cold', grade 8.3 decayed by 0.5 should become 'historical'."""
+    id_cold = db.add_entry(file="test.md", fact="Should go cold", source="[test]", grade=5, tier="active")
+    id_hist = db.add_entry(file="test.md", fact="Should go historical", source="[test]", grade=8.3, tier="active")
+
+    # Backdate last_accessed so decay applies
+    db._execute("UPDATE entries SET last_accessed = datetime('now', '-90 days') WHERE id IN (?, ?)", (id_cold, id_hist))
+
+    db.decay_scores(days_threshold=60, decay_amount=0.5)
+
+    entry_cold = db.get_entry(id_cold)
+    assert entry_cold["grade"] == 4.5
+    assert entry_cold["tier"] == "cold"
+
+    entry_hist = db.get_entry(id_hist)
+    assert entry_hist["grade"] == pytest.approx(7.8)
+    assert entry_hist["tier"] == "historical"
