@@ -144,7 +144,7 @@ flowchart LR
 | Detects emotional state | No | **Yes** — loads different files when stressed vs. building |
 | Tracks freshness | No | **Yes** — timestamps per entry |
 | Multi-hop retrieval | No | **Yes** — file A leads to file B |
-| Requires infrastructure | Vector DB + embeddings | **Just text files** |
+| Requires infrastructure | Vector DB + embeddings | **SQLite + text files** |
 | Human-readable | No | **Yes** — plain markdown |
 
 <br>
@@ -435,11 +435,12 @@ kontext/
   migrate.py               Import flat memory files into database
   export.py                Export database to backward-compatible markdown
   graph.py                 Knowledge graph — entity extraction and relations
+  sync.py                  Startup sync — imports file edits that missed DB
   kontext.db               SQLite database (auto-created on first use)
   SKILL.md                 /kontext skill for Claude Code
   templates/               Starter files for new users
   pipeline/                Intake processing engine
-  tests/                   82 tests, all passing
+  tests/                   94 tests, all passing
 ```
 
 <br>
