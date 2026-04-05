@@ -398,7 +398,20 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
         elif tool_name == "kontext_reindex":
             entries.clear()
             entries.extend(index_memories(memory_dir, force=True))
-            return _mcp_result(req_id, f"Re-indexed {len(entries)} memory files.")
+            # Also embed individual entries into DB
+            try:
+                db = _get_db()
+                model = get_model()
+                all_db_entries = db.get_entries()
+                embedded = 0
+                for entry in all_db_entries:
+                    if not entry.get("embedding"):
+                        vec = model.encode(entry["fact"]).tolist()
+                        db.store_embedding(entry["id"], vec)
+                        embedded += 1
+                return _mcp_result(req_id, f"Re-indexed {len(entries)} files. Embedded {embedded} entries in DB.")
+            except Exception:
+                return _mcp_result(req_id, f"Re-indexed {len(entries)} memory files.")
         # --- Database-backed tools ---
 
         elif tool_name == "kontext_write":
@@ -416,6 +429,14 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                 tier = args.get("tier", "active")
 
                 entry_id = db.add_entry(file=file, fact=fact, source=source, grade=grade, tier=tier)
+
+                # Embed the new entry
+                try:
+                    model = get_model()
+                    vec = model.encode(fact).tolist()
+                    db.store_embedding(entry_id, vec)
+                except Exception:
+                    pass  # Embedding is optional
 
                 # Auto-export the affected file and update MEMORY.md
                 md_content = export_file(db, file)

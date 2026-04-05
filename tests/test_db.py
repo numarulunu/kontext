@@ -4,6 +4,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
+import struct
 import tempfile
 from pathlib import Path
 from db import KontextDB
@@ -172,3 +173,25 @@ def test_detect_conflict_no_false_positives(db):
     db.add_entry(file="identity.md", fact="Location: Constanta", source="[Claude 2026-04]", grade=9, tier="active")
     conflicts = db.detect_conflicts(file="identity.md")
     assert len(conflicts) == 0
+
+
+# --- Embeddings ---
+
+def test_store_and_get_embedding(db):
+    entry_id = db.add_entry(file="test.md", fact="Test embedding", source="[test]", grade=8, tier="active")
+    fake_embedding = [0.1, 0.2, 0.3, 0.4]
+    db.store_embedding(entry_id, fake_embedding)
+    result = db.get_embedding(entry_id)
+    assert result is not None
+    assert len(result) == 4
+    assert abs(result[0] - 0.1) < 0.001
+
+def test_search_by_embedding(db):
+    id1 = db.add_entry(file="test.md", fact="Python programming language", source="[test]", grade=8, tier="active")
+    id2 = db.add_entry(file="test.md", fact="JavaScript web development", source="[test]", grade=8, tier="active")
+    db.store_embedding(id1, [0.9, 0.1, 0.0, 0.0])
+    db.store_embedding(id2, [0.0, 0.0, 0.9, 0.1])
+    query_vec = [0.85, 0.15, 0.0, 0.0]
+    results = db.semantic_search(query_vec, limit=2)
+    assert len(results) >= 1
+    assert results[0]["fact"] == "Python programming language"

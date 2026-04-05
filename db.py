@@ -11,6 +11,7 @@ import os
 from datetime import datetime, timezone
 from collections import deque
 from pathlib import Path
+import struct
 
 
 class KontextDB:
@@ -306,6 +307,56 @@ class KontextDB:
             (resolution, conflict_id)
         )
 
+
+    # --- Embeddings ---
+
+    def store_embedding(self, entry_id: int, embedding: list[float]):
+        """Store an embedding vector as a BLOB (packed floats)."""
+        blob = struct.pack(f'{len(embedding)}f', *embedding)
+        self._execute("UPDATE entries SET embedding = ? WHERE id = ?", (blob, entry_id))
+
+    def get_embedding(self, entry_id: int) -> list[float] | None:
+        """Retrieve an embedding vector from BLOB storage."""
+        row = self.conn.execute("SELECT embedding FROM entries WHERE id = ?", (entry_id,)).fetchone()
+        if row and row[0]:
+            blob = row[0]
+            count = len(blob) // 4  # 4 bytes per float
+            return list(struct.unpack(f'{count}f', blob))
+        return None
+
+    def semantic_search(self, query_embedding: list[float], limit: int = 10, min_grade: float = 0) -> list[dict]:
+        """Find entries most similar to query_embedding using cosine similarity."""
+        import math
+
+        query_mag = math.sqrt(sum(x * x for x in query_embedding))
+        if query_mag == 0:
+            return []
+
+        rows = self.conn.execute(
+            "SELECT id, file, fact, source, grade, tier, embedding FROM entries WHERE embedding IS NOT NULL AND grade >= ?",
+            (min_grade,)
+        ).fetchall()
+
+        results = []
+        for row in rows:
+            blob = row[6]
+            count = len(blob) // 4
+            entry_vec = struct.unpack(f'{count}f', blob)
+
+            dot = sum(a * b for a, b in zip(query_embedding, entry_vec))
+            entry_mag = math.sqrt(sum(x * x for x in entry_vec))
+            if entry_mag == 0:
+                continue
+            similarity = dot / (query_mag * entry_mag)
+
+            results.append({
+                "id": row[0], "file": row[1], "fact": row[2],
+                "source": row[3], "grade": row[4], "tier": row[5],
+                "score": similarity,
+            })
+
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results[:limit]
     def __enter__(self):
         return self
 
