@@ -26,6 +26,19 @@ _model = None
 _embeddings_cache = {}
 _cache_file = None
 
+# Lazy DB instance -- only initialized when database tools are called
+_db_instance = None
+
+
+def _get_db():
+    """Lazy-load the database. Avoids import errors if db.py has issues."""
+    global _db_instance
+    if _db_instance is None:
+        from db import KontextDB
+        _db_instance = KontextDB()
+    return _db_instance
+
+
 
 def find_memory_dir() -> Path:
     """Auto-detect the memory directory."""
@@ -182,6 +195,136 @@ def search(query: str, entries: list[dict], top_k: int = 6) -> list[dict]:
     return results[:top_k]
 
 
+
+def _mcp_result(req_id, text: str) -> dict:
+    """Helper: wrap text in an MCP tool result."""
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": {"content": [{"type": "text", "text": text}]},
+    }
+
+
+def _mcp_error(req_id, text: str) -> dict:
+    """Helper: wrap text in an MCP error result."""
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": {"content": [{"type": "text", "text": f"Error: {text}"}]},
+    }
+
+
+# ---------------------------------------------------------------------------
+# Tool definitions for tools/list
+# ---------------------------------------------------------------------------
+
+_TOOL_DEFINITIONS = [
+    {
+        "name": "kontext_search",
+        "description": "Search memory files by meaning. Returns the most relevant files for any query. Use this BEFORE reading memory files to know which ones to load.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What you are looking for -- a topic, question, or the user message",
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": "Number of results (default 5)",
+                    "default": 5,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "kontext_reindex",
+        "description": "Re-index all memory files. Run after adding new files or changing descriptions in MEMORY.md.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "kontext_write",
+        "description": "Write a memory entry to the database and auto-export to flat markdown files. Use this to store new facts, decisions, or corrections.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file": {"type": "string", "description": "Target memory file (e.g. user_identity.md)"},
+                "fact": {"type": "string", "description": "The fact, decision, or observation to store"},
+                "source": {"type": "string", "description": "Where this came from (e.g. user stated, inferred)"},
+                "grade": {"type": "number", "description": "Importance score 1-10 (default 5)", "default": 5},
+                "tier": {"type": "string", "description": "Entry tier: active, historical, or cold (default active)", "default": "active"},
+            },
+            "required": ["file", "fact"],
+        },
+    },
+    {
+        "name": "kontext_query",
+        "description": "Query memory entries from the database. Filter by file, tier, minimum grade, or search text.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file": {"type": "string", "description": "Filter by memory file name"},
+                "tier": {"type": "string", "description": "Filter by tier: active, historical, or cold"},
+                "min_grade": {"type": "number", "description": "Minimum grade to include"},
+                "search": {"type": "string", "description": "Full-text search on fact content"},
+            },
+        },
+    },
+    {
+        "name": "kontext_relate",
+        "description": "Query the knowledge graph. Find everything connected to an entity (person, tool, platform) up to N hops.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "description": "Entity name to look up (e.g. Stripe, Luiza, Convertor)"},
+                "depth": {"type": "integer", "description": "How many hops to traverse (default 2)", "default": 2},
+            },
+            "required": ["entity"],
+        },
+    },
+    {
+        "name": "kontext_recent",
+        "description": "Get memory entries changed in the last N hours. Useful for seeing what was recently updated.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "hours": {"type": "integer", "description": "Look back this many hours (default 24)", "default": 24},
+            },
+        },
+    },
+    {
+        "name": "kontext_decay",
+        "description": "Run score decay on stale memory entries. Reduces grade of entries not accessed recently. Auto-exports affected files.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "days_threshold": {"type": "integer", "description": "Entries not accessed in this many days get decayed (default 60)", "default": 60},
+                "decay_amount": {"type": "number", "description": "How much to reduce the grade by (default 0.5)", "default": 0.5},
+            },
+        },
+    },
+    {
+        "name": "kontext_session",
+        "description": "Save or retrieve session state. Use save to bookmark where you are, get to resume.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "description": "save to store session state, get to retrieve the latest", "enum": ["save", "get"]},
+                "project": {"type": "string", "description": "Project name (for save)"},
+                "status": {"type": "string", "description": "Current status summary (for save)"},
+                "next_step": {"type": "string", "description": "What to do next (for save)"},
+                "key_decisions": {"type": "string", "description": "Important decisions made this session (for save)"},
+            },
+            "required": ["action"],
+        },
+    },
+]
+
+
 # ---------------------------------------------------------------------------
 # MCP Protocol (stdio transport)
 # ---------------------------------------------------------------------------
@@ -198,7 +341,7 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
             "id": req_id,
             "result": {
                 "protocolVersion": "2024-11-05",
-                "serverInfo": {"name": "kontext-memory", "version": "1.0.0"},
+                "serverInfo": {"name": "kontext-memory", "version": "2.0.0"},
                 "capabilities": {"tools": {"listChanged": False}},
             },
         }
@@ -210,37 +353,7 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
         return {
             "jsonrpc": "2.0",
             "id": req_id,
-            "result": {
-                "tools": [
-                    {
-                        "name": "kontext_search",
-                        "description": "Search memory files by meaning. Returns the most relevant files for any query. Use this BEFORE reading memory files to know which ones to load.",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "query": {
-                                    "type": "string",
-                                    "description": "What you're looking for — a topic, question, or the user's message",
-                                },
-                                "top_k": {
-                                    "type": "integer",
-                                    "description": "Number of results (default 5)",
-                                    "default": 5,
-                                },
-                            },
-                            "required": ["query"],
-                        },
-                    },
-                    {
-                        "name": "kontext_reindex",
-                        "description": "Re-index all memory files. Run after adding new files or changing descriptions in MEMORY.md.",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {},
-                        },
-                    },
-                ]
-            },
+            "result": {"tools": _TOOL_DEFINITIONS},
         }
 
     elif method == "tools/call":
@@ -252,11 +365,7 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
             top_k = args.get("top_k", 5)
 
             if not query:
-                return {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "result": {"content": [{"type": "text", "text": "Error: query is required"}]},
-                }
+                return _mcp_error(req_id, "query is required")
 
             results = search(query, entries, top_k)
             output_lines = [f"**Kontext Search:** {len(results)} files matched\n"]
@@ -275,11 +384,155 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
         elif tool_name == "kontext_reindex":
             entries.clear()
             entries.extend(index_memories(memory_dir, force=True))
-            return {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {"content": [{"type": "text", "text": f"Re-indexed {len(entries)} memory files."}]},
-            }
+            return _mcp_result(req_id, f"Re-indexed {len(entries)} memory files.")
+        # --- Database-backed tools ---
+
+        elif tool_name == "kontext_write":
+            try:
+                db = _get_db()
+                from export import export_file, export_memory_index
+
+                file = args.get("file", "")
+                fact = args.get("fact", "")
+                if not file or not fact:
+                    return _mcp_error(req_id, "file and fact are required")
+
+                source = args.get("source", "")
+                grade = args.get("grade", 5)
+                tier = args.get("tier", "active")
+
+                entry_id = db.add_entry(file=file, fact=fact, source=source, grade=grade, tier=tier)
+
+                # Auto-export the affected file and update MEMORY.md
+                md_content = export_file(db, file)
+                (memory_dir / file).write_text(md_content, encoding="utf-8")
+                export_memory_index(db, memory_dir)
+
+                return _mcp_result(req_id, f"Wrote entry #{entry_id} to {file} (grade {grade}, {tier}). Exported to markdown.")
+            except Exception as e:
+                return _mcp_error(req_id, f"kontext_write failed: {e}")
+
+        elif tool_name == "kontext_query":
+            try:
+                db = _get_db()
+                search_text = args.get("search", "")
+
+                if search_text:
+                    qresults = db.search_entries(search_text)
+                else:
+                    qresults = db.get_entries(
+                        file=args.get("file"),
+                        tier=args.get("tier"),
+                        min_grade=args.get("min_grade"),
+                    )
+
+                if not qresults:
+                    return _mcp_result(req_id, "No entries found matching those filters.")
+
+                lines = [f"**Kontext Query:** {len(qresults)} entries\n"]
+                for e in qresults:
+                    lines.append(f"- [{e['file']}] (grade {e['grade']}, {e['tier']}) {e['fact']}")
+
+                return _mcp_result(req_id, "\n".join(lines))
+            except Exception as e:
+                return _mcp_error(req_id, f"kontext_query failed: {e}")
+
+        elif tool_name == "kontext_relate":
+            try:
+                db = _get_db()
+                from graph import query_connections, describe_entity
+
+                entity = args.get("entity", "")
+                if not entity:
+                    return _mcp_error(req_id, "entity is required")
+
+                depth = args.get("depth", 2)
+                connections = query_connections(db, entity, depth)
+                description = describe_entity(db, entity)
+
+                lines = [description, ""]
+                if connections:
+                    lines.append(f"Graph traversal ({len(connections)} relations, depth {depth}):")
+                    seen = set()
+                    for r in connections:
+                        key = f"{r['entity_a']}-{r['relation']}-{r['entity_b']}"
+                        if key not in seen:
+                            seen.add(key)
+                            lines.append(f"  {r['entity_a']} --{r['relation']}--> {r['entity_b']}")
+
+                return _mcp_result(req_id, "\n".join(lines))
+            except Exception as e:
+                return _mcp_error(req_id, f"kontext_relate failed: {e}")
+
+        elif tool_name == "kontext_recent":
+            try:
+                db = _get_db()
+                hours = args.get("hours", 24)
+                rresults = db.get_recent_changes(hours)
+
+                if not rresults:
+                    return _mcp_result(req_id, f"No entries changed in the last {hours} hours.")
+
+                lines = [f"**Recent changes** (last {hours}h): {len(rresults)} entries\n"]
+                for e in rresults:
+                    lines.append(f"- [{e['file']}] {e['fact']} (updated {e['updated_at']})")
+
+                return _mcp_result(req_id, "\n".join(lines))
+            except Exception as e:
+                return _mcp_error(req_id, f"kontext_recent failed: {e}")
+
+        elif tool_name == "kontext_decay":
+            try:
+                db = _get_db()
+                from export import export_all, export_memory_index
+
+                days_threshold = args.get("days_threshold", 60)
+                decay_amount = args.get("decay_amount", 0.5)
+
+                db.decay_scores(days_threshold=days_threshold, decay_amount=decay_amount)
+
+                # Auto-export all files after decay (scores may have changed across files)
+                export_all(db, memory_dir)
+                export_memory_index(db, memory_dir)
+
+                return _mcp_result(req_id, f"Decay applied (threshold: {days_threshold} days, amount: {decay_amount}). All files re-exported.")
+            except Exception as e:
+                return _mcp_error(req_id, f"kontext_decay failed: {e}")
+
+        elif tool_name == "kontext_session":
+            try:
+                db = _get_db()
+                action = args.get("action", "")
+
+                if action == "save":
+                    db.save_session(
+                        project=args.get("project", ""),
+                        status=args.get("status", ""),
+                        next_step=args.get("next_step", ""),
+                        key_decisions=args.get("key_decisions", ""),
+                    )
+                    return _mcp_result(req_id, "Session state saved.")
+
+                elif action == "get":
+                    session = db.get_latest_session()
+                    if not session:
+                        return _mcp_result(req_id, "No saved sessions found.")
+
+                    lines = [
+                        "**Latest session:**",
+                        f"  Project: {session.get('project', '')}",
+                        f"  Status: {session.get('status', '')}",
+                        f"  Next step: {session.get('next_step', '')}",
+                        f"  Key decisions: {session.get('key_decisions', '')}",
+                        f"  Saved at: {session.get('created_at', '')}",
+                    ]
+                    return _mcp_result(req_id, "\n".join(lines))
+
+                else:
+                    return _mcp_error(req_id, "action must be save or get")
+            except Exception as e:
+                return _mcp_error(req_id, f"kontext_session failed: {e}")
+
 
     return {
         "jsonrpc": "2.0",
