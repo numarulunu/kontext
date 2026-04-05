@@ -91,7 +91,7 @@ KONTEXT_HOOK = {
                 'echo "$NOW" > "$SEEN"; '
                 'echo "{\\"additionalContext\\":\\"[Kontext Sync] Memory updated: $CONTENT\\"}"; '
                 'exit 0; fi; fi; '
-                'MEMDIR=$(find "$HOME/.claude/projects" -maxdepth 2 -name \'MEMORY.md\' -path \'*/memory/*\' 2>/dev/null | head -1); '
+                'MEMDIR=$(find "$HOME/.claude/projects" -maxdepth 3 -name \'MEMORY.md\' -path \'*/memory/*\' 2>/dev/null | head -1); '
                 'if [ -n "$MEMDIR" ]; then '
                 'MDIR=$(dirname "$MEMDIR"); '
                 'CHANGED=$(find "$MDIR" -name \'*.md\' -newer "$SEEN" 2>/dev/null | xargs -I{} basename {} | sort -u | tr \'\\n\' \', \' | sed \'s/,$//\'); '
