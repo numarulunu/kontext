@@ -27,11 +27,12 @@ KONTEXT_POSTCOMPACT = {
             "type": "agent",
             "prompt": (
                 "Context was just compressed. Scan the conversation summary for facts, decisions, "
-                "preferences, or project status changes that should be in memory. Read MEMORY.md, "
-                "write new info as atomic facts with date tags. After writing, broadcast changed "
-                "files to ~/.claude/projects/_memory_broadcast. Log to ~/.claude/.kontext_agent.log: "
-                "[timestamp] PostCompact: X entries saved to Y files. If nothing is memory-worthy, "
-                "do nothing and do not log. Work silently."
+                "preferences, or project status changes that should be in memory. "
+                "Use the kontext_query tool to check what already exists. "
+                "Use the kontext_write tool to store new entries (file, fact, source, grade, tier). "
+                "Use the kontext_relate tool to check entity connections. "
+                "Use the kontext_session tool to save current session state. "
+                "If nothing is memory-worthy, do nothing. Work silently."
             ),
             "model": "claude-haiku-4-5-20251001",
             "timeout": 30,
@@ -40,27 +41,23 @@ KONTEXT_POSTCOMPACT = {
     ]
 }
 
-# SessionEnd agent — full pipeline: save, quality check, split, conflict scan, log
+# SessionEnd agent — full pipeline using MCP tools
 KONTEXT_SESSIONEND = {
     "hooks": [
         {
             "type": "agent",
             "prompt": (
-                "This session is ending. Run this full pipeline:\n\n"
+                "This session is ending. Run this pipeline:\n\n"
                 "1. SAVE: Review conversation for facts, decisions, preferences, project statuses "
-                "NOT yet in memory. Read MEMORY.md index, write missing info as atomic facts with "
-                "date tags [YYYY-MM].\n\n"
-                "2. CONFLICTS: Scan files you changed. Does any new entry contradict an existing "
-                "entry? If yes, log to the memory directory's _conflicts.md.\n\n"
-                "3. QUALITY: Grade each entry in files you touched 1-10. Delete grade 1-4. "
-                "Move grade 5-7 from Active to Historical section.\n\n"
-                "4. SPLIT: Check if any memory file exceeds 12,000 characters (~3000 tokens). "
-                "If so, create a NEW file for the second-biggest sub-topic with proper frontmatter, "
-                "move entries there, add to MEMORY.md index.\n\n"
-                "5. REFRESH: Update MEMORY.md descriptions for changed files.\n\n"
-                "6. BROADCAST: Echo changed filenames to ~/.claude/projects/_memory_broadcast.\n\n"
-                "7. LOG: Append to ~/.claude/.kontext_agent.log: [timestamp] SessionEnd: "
-                "X files changed, Y added, Z deleted, W split, C conflicts.\n\n"
+                "not yet in memory. Use kontext_query to check existing entries. "
+                "Use kontext_write to store new entries with proper file, fact, source '[Claude YYYY-MM]', "
+                "grade (1-10), and tier (active/historical).\n\n"
+                "2. SESSION: Use kontext_session with action 'save' to record current project, status, "
+                "next step, and key decisions.\n\n"
+                "3. RELATIONS: Use kontext_relate to check if new entities should be connected. "
+                "Add relations for any new tools, people, or platforms mentioned.\n\n"
+                "4. DECAY: Use kontext_decay to run score decay (default thresholds are fine).\n\n"
+                "5. RECENT: Use kontext_recent to verify your changes were saved.\n\n"
                 "Work silently."
             ),
             "model": "claude-haiku-4-5-20251001",
