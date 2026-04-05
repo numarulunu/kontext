@@ -12,6 +12,8 @@ from export import export_file, export_all, export_memory_index
 @pytest.fixture
 def populated_db(tmp_path):
     db = KontextDB(str(tmp_path / "test.db"))
+    db.set_file_meta("user_identity.md", file_type="user", description="Core bio")
+    db.set_file_meta("project_goals.md", file_type="project", description="Active projects")
     db.add_entry(file="user_identity.md", fact="Name: Ionut Rosu", source="[Claude 2026-04]", grade=10, tier="active")
     db.add_entry(file="user_identity.md", fact="Was in Dubai", source="[Gemini 2025]", grade=5, tier="historical")
     db.add_entry(file="project_goals.md", fact="YouTube channel launching", source="[Claude 2026-04]", grade=8, tier="active")

@@ -42,7 +42,12 @@ _FILE_META = {
 
 def export_file(db: KontextDB, filename: str) -> str:
     """Generate markdown content for a single file from database entries."""
-    file_type, description = _FILE_META.get(filename, ("user", ""))
+    meta = db.get_file_meta(filename)
+    file_type = meta["file_type"]
+    description = meta["description"]
+    # Fallback to hardcoded meta if DB has no description
+    if not description and filename in _FILE_META:
+        file_type, description = _FILE_META[filename]
     name = filename.replace(".md", "").replace("_", " ").title()
 
     lines = [
