@@ -69,6 +69,8 @@ class KontextDB:
                 status TEXT DEFAULT '',
                 next_step TEXT DEFAULT '',
                 key_decisions TEXT DEFAULT '',
+                summary TEXT DEFAULT '',
+                files_touched TEXT DEFAULT '',
                 created_at TEXT DEFAULT (datetime('now'))
             );
 
@@ -86,6 +88,16 @@ class KontextDB:
             CREATE INDEX IF NOT EXISTS idx_relations_entity_a ON relations(entity_a);
             CREATE INDEX IF NOT EXISTS idx_relations_entity_b ON relations(entity_b);
         """)
+        self.conn.commit()
+        self._migrate()
+
+    def _migrate(self):
+        """Add columns that may not exist in older databases."""
+        cursor = self.conn.execute("PRAGMA table_info(sessions)")
+        cols = {row[1] for row in cursor.fetchall()}
+        for col in ("summary", "files_touched"):
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} TEXT DEFAULT ''")
         self.conn.commit()
 
     def _execute(self, sql, params=()):
@@ -185,14 +197,16 @@ class KontextDB:
 
     # --- Sessions ---
 
-    def save_session(self, project: str = "", status: str = "", next_step: str = "", key_decisions: str = ""):
+    def save_session(self, project: str = "", status: str = "", next_step: str = "",
+                     key_decisions: str = "", summary: str = "", files_touched: str = ""):
         self._execute(
-            "INSERT INTO sessions (project, status, next_step, key_decisions) VALUES (?, ?, ?, ?)",
-            (project, status, next_step, key_decisions)
+            "INSERT INTO sessions (project, status, next_step, key_decisions, summary, files_touched) VALUES (?, ?, ?, ?, ?, ?)",
+            (project, status, next_step, key_decisions, summary, files_touched)
         )
-        self._export_last_session(project, status, next_step, key_decisions)
+        self._export_last_session(project, status, next_step, key_decisions, summary, files_touched)
 
-    def _export_last_session(self, project: str, status: str, next_step: str, key_decisions: str):
+    def _export_last_session(self, project: str, status: str, next_step: str,
+                             key_decisions: str, summary: str = "", files_touched: str = ""):
         """Write _last_session.md so SessionStart shell hooks can read it without MCP."""
         # Only export when using the production database — test DBs must not
         # overwrite real session state (the cause of the "Project 9" bug).
@@ -201,15 +215,20 @@ class KontextDB:
             return
         target = Path.home() / ".claude" / "_last_session.md"
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        content = (
-            f"---\ndate: {today}\n"
-            f"project: {project}\n"
-            f"status: {status}\n"
-            f"next: {next_step}\n"
-            f"key_decisions: {key_decisions}\n---\n"
-        )
+        parts = [
+            f"---\ndate: {today}",
+            f"project: {project}",
+            f"status: {status}",
+            f"next: {next_step}",
+            f"key_decisions: {key_decisions}",
+        ]
+        if summary:
+            parts.append(f"summary: {summary}")
+        if files_touched:
+            parts.append(f"files_touched: {files_touched}")
+        parts.append("---\n")
         try:
-            target.write_text(content, encoding="utf-8")
+            target.write_text("\n".join(parts), encoding="utf-8")
         except Exception:
             pass  # Non-critical — DB is the source of truth
 

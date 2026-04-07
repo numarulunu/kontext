@@ -328,6 +328,8 @@ _TOOL_DEFINITIONS = [
                 "status": {"type": "string", "description": "Current status summary (for save)"},
                 "next_step": {"type": "string", "description": "What to do next (for save)"},
                 "key_decisions": {"type": "string", "description": "Important decisions made this session (for save)"},
+                "summary": {"type": "string", "description": "2-3 sentence conversation summary — what was discussed, tone, direction (for save)"},
+                "files_touched": {"type": "string", "description": "Comma-separated list of files edited or discussed this session (for save)"},
             },
             "required": ["action"],
         },
@@ -564,6 +566,8 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                         status=args.get("status", ""),
                         next_step=args.get("next_step", ""),
                         key_decisions=args.get("key_decisions", ""),
+                        summary=args.get("summary", ""),
+                        files_touched=args.get("files_touched", ""),
                     )
                     _logger.info(f"SESSION SAVE: project={args.get('project','')} status={args.get('status','')[:60]}")
                     return _mcp_result(req_id, "Session state saved.")
@@ -579,8 +583,12 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                         f"  Status: {session.get('status', '')}",
                         f"  Next step: {session.get('next_step', '')}",
                         f"  Key decisions: {session.get('key_decisions', '')}",
-                        f"  Saved at: {session.get('created_at', '')}",
                     ]
+                    if session.get('summary'):
+                        lines.append(f"  Summary: {session['summary']}")
+                    if session.get('files_touched'):
+                        lines.append(f"  Files touched: {session['files_touched']}")
+                    lines.append(f"  Saved at: {session.get('created_at', '')}")
                     return _mcp_result(req_id, "\n".join(lines))
 
                 else:
