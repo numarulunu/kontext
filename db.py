@@ -194,6 +194,11 @@ class KontextDB:
 
     def _export_last_session(self, project: str, status: str, next_step: str, key_decisions: str):
         """Write _last_session.md so SessionStart shell hooks can read it without MCP."""
+        # Only export when using the production database — test DBs must not
+        # overwrite real session state (the cause of the "Project 9" bug).
+        prod_db = str(Path(__file__).parent / "kontext.db")
+        if os.path.abspath(self.db_path) != os.path.abspath(prod_db):
+            return
         target = Path.home() / ".claude" / "_last_session.md"
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         content = (
