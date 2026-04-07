@@ -12,11 +12,35 @@ You manage a memory library system. Memory files live in the Claude Code project
 
 ## Paths
 
-- **Memory dir:** Find by scanning `~/.claude/projects/*/memory/` — use the one with the most `.md` files
+- **Memory dir:** Find by scanning `~/.claude/projects/*/memory/` — use the one with the most `.md` files (currently `C--Users-Gaming-PC-Desktop-Claude-Personal-Context/memory/`)
 - **Kontext tools:** `~/Desktop/Claude/Kontext/`
 - **Backup System:** `~/Desktop/Claude/Backup System/`
 - **Digest dir:** `~/Desktop/Claude/Backup System/_digests/`
+- **Digest manifest:** `~/Desktop/Claude/Backup System/_digests/_manifest.md`
 - **Chunks dir:** `~/Desktop/Claude/Kontext/_chunks/`
+- **Intake extractor:** `~/Desktop/Claude/Kontext/pipeline/extract.py`
+
+### Flag files (presence = state)
+
+- `~/Desktop/Claude/Backup System/_digest-pending` — daily digest is ready to process
+- `~/Desktop/Claude/Kontext/_processing-ready` — intake chunks are ready to process
+- `~/Desktop/Claude/Tool Auditor/_audit-pending` — tool auditor has new findings
+
+## MCP tools (preferred write path)
+
+Memory should be written via the Kontext MCP tools, NOT raw Edit/Write. The MCP server is the only path that updates the SQLite DB, regenerates flat files, and broadcasts changes to other sessions. Direct file edits are recovered later by `sync.py` but lose the source tag, the embedding, and the broadcast.
+
+| Tool | Use for |
+|---|---|
+| `mcp__kontext__kontext_write` | Add/update an entry. Args: file, fact, source, grade (1-10), tier (active/historical) |
+| `mcp__kontext__kontext_query` | Check whether a fact already exists before writing |
+| `mcp__kontext__kontext_search` | Semantic search across all entries |
+| `mcp__kontext__kontext_recent` | Entries changed in the last N hours |
+| `mcp__kontext__kontext_conflicts` | Detect/list/resolve conflicts. Actions: detect, list, resolve |
+| `mcp__kontext__kontext_relate` | Add a relation between two entities (knowledge graph) |
+| `mcp__kontext__kontext_decay` | Decay grades on stale entries |
+| `mcp__kontext__kontext_session` | Save session state |
+| `mcp__kontext__kontext_reindex` | Rebuild the in-memory index and DB embeddings |
 
 ## MEMORY.md — The Live Index
 
@@ -106,35 +130,36 @@ Process pending conversation digest into memory updates.
    - Reads current memory files
    - Identifies NEW information worth persisting (project changes, decisions, struggles, goals, tools, relationship updates, health changes, AI feedback)
    - Returns structured proposals (does NOT edit files directly)
-4. Collect all proposals. Deduplicate. Resolve conflicts — most recently dated info wins. Use `kontext_conflicts` tool to check and resolve.
-5. Apply updates (Edit existing or Create new + update MEMORY.md index)
-6. **If a topic cluster emerges that doesn't fit any existing file, create a new file for it.**
+4. Collect all proposals. Deduplicate via `mcp__kontext__kontext_query` before writing. Resolve conflicts — most recently dated info wins, unless `feedback_conflict_patterns.md` has a matching pattern.
+5. **Apply updates via `mcp__kontext__kontext_write`** — never raw Edit. The MCP tool updates DB, exports flat files, and broadcasts changes. Each entry must include a dated source tag like `[Claude 2026-04-07]` so the temporal-aware conflict detector treats updates as evolution, not contradictions.
+6. **If a topic cluster emerges that doesn't fit any existing file, create a new file** (Write the markdown shell, then `kontext_write` entries into it, then add to MEMORY.md).
 7. Do NOT duplicate existing info. Do NOT store ephemeral task details.
 8. If any digest file is missing, skip it and report which were skipped.
-9. Output bullet-point summary of changes.
-10. Delete `_digest-pending` flag.
-11. Auto-backup: run `bash ~/Desktop/Claude/Backup\ System/backup.sh "memory sync $(date '+%Y-%m-%d')"` in background.
+9. After applying updates, run `mcp__kontext__kontext_conflicts` action="detect" to surface any new contradictions for the user to triage.
+10. Output bullet-point summary of changes.
+11. Delete the flag: `rm "$HOME/Desktop/Claude/Backup System/_digest-pending"`
+12. Auto-backup: run `bash ~/Desktop/Claude/Backup\ System/backup.sh "memory sync $(date '+%Y-%m-%d')"` in background.
 
 ### `/kontext process-intake`
 
 Process raw file intake (ChatGPT, Gemini, WhatsApp exports) into memory.
 
-1. Check if `_processing-ready` flag exists in `~/Desktop/Claude/Kontext/`
-2. If not: tell user to run `python extract.py` from the Kontext directory first, then retry.
+1. Check if `~/Desktop/Claude/Kontext/_processing-ready` flag exists.
+2. If not: tell user to run `python pipeline/extract.py` from the Kontext directory first, then retry.
 3. Read the flag for metadata (chunk count, tokens).
 4. Read ALL memory files.
-5. Read chunks from `_chunks/` — process in batches of 5 subagents at a time.
-6. Each subagent extracts golden nuggets with: fact, source tag `[Platform Date]`, grade 1-10.
+5. Read chunks from `~/Desktop/Claude/Kontext/_chunks/` — process in batches of 5 subagents at a time.
+6. Each subagent extracts golden nuggets with: fact, source tag `[Platform YYYY-MM]`, grade 1-10.
 7. Grade 5+ gets written. Grade 1-4 dropped.
 8. For each nugget grade 5+:
-   - Matches existing → skip
-   - Contradicts existing → use `kontext_conflicts` MCP tool with action 'detect' to check, then log via the tool. Auto-resolve only if pattern confidence >= 80%.
-   - New → write to appropriate file. Grade 8-10 → active section. Grade 5-7 → Historical section.
-9. **If nuggets cluster around a topic with no matching file, create a new file.**
-10. When a file approaches 3,000 tokens, compress lowest-graded entries first.
-11. Output intake receipt: files processed, nuggets extracted/written, conflicts found, new files created.
-12. Delete `_processing-ready` flag.
-13. Auto-backup: run `bash ~/Desktop/Claude/Backup\ System/backup.sh "intake sync $(date '+%Y-%m-%d')"` in background.
+   - Matches existing (check via `mcp__kontext__kontext_query`) → skip
+   - New → write via `mcp__kontext__kontext_write`. Grade 8-10 → tier="active". Grade 5-7 → tier="historical". ALWAYS include the dated source tag.
+9. After all writes, run `mcp__kontext__kontext_conflicts` action="detect". Auto-resolve only if `feedback_conflict_patterns.md` has a matching pattern at 80%+ confidence; otherwise leave for `/kontext resolve`.
+10. **If nuggets cluster around a topic with no matching file, create a new file.**
+11. When a file approaches 3,000 tokens, propose splitting (don't compress automatically).
+12. Output intake receipt: files processed, nuggets extracted/written, conflicts found, new files created.
+13. Delete the flag: `rm "$HOME/Desktop/Claude/Kontext/_processing-ready"`
+14. Auto-backup: run `bash ~/Desktop/Claude/Backup\ System/backup.sh "intake sync $(date '+%Y-%m-%d')"` in background.
 
 ### `/kontext brainstorm`
 
@@ -159,47 +184,31 @@ Memory health review and guided cleanup.
 
 Quick health check — no changes, just reporting.
 
-1. Run: `python ~/Desktop/Claude/Kontext/brainstorm.py`
+1. Run: `python ~/Desktop/Claude/Kontext/brainstorm.py` — already reports file count, entry counts by tier, pending conflicts (from DB), bloated files, stale active entries.
 2. Show the output directly. No cleanup prompts.
-3. Also check:
-   - Does `_digest-pending` exist? Report date.
-   - Does `_processing-ready` exist? Report metadata.
-   - Use `kontext_conflicts` MCP tool with action 'list' to check pending conflicts. Report count.
-   - Does `_audit-pending` exist? Report date.
-4. Report total file count and MEMORY.md line count.
+3. Also check the flag files (see Paths section above) and report any that exist:
+   - `~/Desktop/Claude/Backup System/_digest-pending` — report timestamp
+   - `~/Desktop/Claude/Kontext/_processing-ready` — read and report metadata
+   - `~/Desktop/Claude/Tool Auditor/_audit-pending` — report timestamp
+4. Pending conflicts come from the SQLite DB (via brainstorm.py output or `mcp__kontext__kontext_conflicts` action="list"). There is no `_conflicts.md` file — that path is legacy.
 
 ### `/kontext resolve`
 
-Interactive conflict resolution session.
+Interactive conflict resolution session. Conflicts live in the SQLite DB, not in any flat file.
 
-1. Use `kontext_conflicts` MCP tool with action 'list' to get pending conflicts.
-2. If no pending conflicts, say so and exit.
+1. Call `mcp__kontext__kontext_conflicts` with `action: "list"` to fetch pending conflicts.
+2. If empty, say so and exit.
 3. For each PENDING conflict, present:
-   - What the conflict is (plain language)
-   - Version A (existing memory)
-   - Version B (new data)
-   - Source of each
-4. Ask user: keep A, keep B, merge, or skip?
-5. Apply decision. Log the resolution pattern to `feedback_conflict_patterns.md`.
-6. Use `kontext_conflicts` MCP tool with action 'resolve' to mark as resolved.
-
-## MCP Tools (v5.0)
-
-Kontext now has a SQLite database backend. These MCP tools are the preferred way to read and write memory:
-
-| Tool | What it does | When to use |
-|---|---|---|
-| `kontext_search` | Semantic search across memory files | Before loading files -- find which ones are relevant |
-| `kontext_write` | Write an entry to database + auto-export markdown | Storing new facts, decisions, corrections |
-| `kontext_query` | Query entries by file, tier, grade, or text search | Checking what already exists before writing |
-| `kontext_relate` | Query the knowledge graph | Finding connections between entities |
-| `kontext_recent` | Get entries changed in last N hours | Checking what was recently updated |
-| `kontext_decay` | Run score decay on stale entries | Maintenance -- reduces grade of untouched entries |
-| `kontext_session` | Save or get session state | Bookmarking where you are |
-| `kontext_conflicts` | Detect, list, or resolve contradictions | When entries might contradict each other |
-| `kontext_reindex` | Re-index all files + embed entries | After bulk changes to memory files |
-
-**When MCP tools are available, prefer them over direct file edits.** The database is the source of truth. Markdown files are auto-generated exports for backward compatibility.
+   - File and conflict ID
+   - Version A (entry_a) and Version B (entry_b) in plain language
+   - Why it's flagged (shared keywords / numeric difference)
+4. Ask user: keep A, keep B, merge into a single new entry, or skip?
+5. Apply the decision:
+   - Keep A → call `kontext_conflicts` action="resolve" with the chosen text
+   - Keep B → same with B's text
+   - Merge → write the merged fact via `mcp__kontext__kontext_write` (with a fresh dated source tag), then resolve
+   - Skip → leave pending
+6. After each decision, log the resolution pattern to `feedback_conflict_patterns.md` via `kontext_write` (Category / Rule / Reasoning) so the auto-resolver learns it for next time.
 
 ## Grading Reference
 
@@ -214,9 +223,9 @@ Kontext now has a SQLite database backend. These MCP tools are the preferred way
 - MEMORY.md is the live index. Every file MUST be listed there with keyword-rich descriptions.
 - Never load more than 6 memory files at once. Pull more only if needed.
 - 3,000 token ceiling per file. When approaching, prefer splitting into sub-files over compressing.
-- Source-tag every new entry: `[ChatGPT 2024-08]`, `[Gemini 2025-01]`, `[Claude 2026-04]`, `[WhatsApp]`
+- Source-tag every new entry: `[ChatGPT 2024-08]`, `[Gemini 2025-01]`, `[Claude 2026-04]`, `[WhatsApp]`. Dated tags are required — the temporal-aware conflict detector ignores undated active entries that share keywords with other dated ones.
 - Historical context is valuable data. Never delete — archive to Historical section.
-- Conflicts go to the database via `kontext_conflicts` MCP tool. Auto-resolve only when pattern confidence >= 80%.
+- Conflicts live in the SQLite DB (via `kontext_conflicts` MCP tool). Auto-resolve only when `feedback_conflict_patterns.md` has a matching pattern at >= 80% confidence.
 - **Create new files aggressively.** 20 focused files > 5 bloated files. The MEMORY.md index handles discoverability.
 
 ## Memory Tiers
