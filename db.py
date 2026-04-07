@@ -267,8 +267,13 @@ class KontextDB:
         self._execute("DELETE FROM relations WHERE id = ?", (relation_id,))
 
     def execute(self, sql: str, params=()):
-        """Public SQL execute -- use for bulk operations like DELETE FROM."""
-        return self.conn.execute(sql, params)
+        """Public SQL execute with auto-commit. Use for bulk operations like DELETE FROM.
+
+        Note: this commits every call. For non-committing access, use db.conn.execute directly.
+        """
+        cursor = self.conn.execute(sql, params)
+        self.conn.commit()
+        return cursor
 
     def query_graph(self, entity: str, depth: int = 2) -> list[dict]:
         """Traverse the knowledge graph up to depth hops from an entity."""
@@ -306,8 +311,18 @@ class KontextDB:
         ).fetchall()]
 
     def detect_conflicts(self, file: str = None) -> list[dict]:
-        """Find potential contradictions: entries in the same file with overlapping keywords but different values."""
-        sql = "SELECT id, file, fact FROM entries WHERE tier != 'cold'"
+        """Find potential contradictions.
+
+        TEMPORAL-AWARE: facts evolve over time. Two entries that share keywords
+        are NOT a conflict if either is dated (source tag like '[Claude 2026-04]')
+        or if one has been demoted to 'historical' tier — those represent
+        evolution, not contradiction. Only flag pairs where BOTH entries are
+        active AND undated AND share enough value-bearing words.
+        """
+        import re
+
+        # Only consider ACTIVE entries — historical ones are already resolved evolution
+        sql = "SELECT id, file, fact, source, tier FROM entries WHERE tier = 'active'"
         params = []
         if file:
             sql += " AND file = ?"
@@ -322,18 +337,56 @@ class KontextDB:
         for e in entries:
             by_file.setdefault(e[1], []).append(e)
 
-        noise_words = {"the", "and", "for", "with", "from", "that", "this", "was", "are", "has", "have", "been"}
+        # Stopwords + common entity nouns that shouldn't trigger on their own
+        noise_words = {
+            "the", "and", "for", "with", "from", "that", "this", "was", "are",
+            "has", "have", "been", "user", "ionut", "ionuț", "claude", "vocality",
+            "this", "that", "with", "into", "over", "than", "then", "when", "what",
+            "which", "they", "them", "their", "there", "would", "could", "should",
+        }
+        date_re = re.compile(r"\[[^\]]*\d{4}[^\]]*\]")  # matches [Claude 2026-04] etc.
+
+        def is_dated(source: str, fact: str) -> bool:
+            return bool(date_re.search(source or "") or date_re.search(fact or ""))
+
+        def value_words(text: str) -> set:
+            # Keep tokens that look like values: numbers, prices, %s, or 5+ char words
+            out = set()
+            for raw in text.split():
+                w = raw.strip(".,;:()[]\"'").lower()
+                if not w or w in noise_words:
+                    continue
+                if any(c.isdigit() for c in w):
+                    out.add(w)
+                elif len(w) >= 5:
+                    out.add(w)
+            return out
 
         for file_name, file_entries in by_file.items():
             for i, e1 in enumerate(file_entries):
-                words_1 = {w.lower() for w in e1[2].split() if len(w) >= 4 and w.lower() not in noise_words}
+                if is_dated(e1[3], e1[2]):
+                    continue  # dated → part of a timeline, not a conflict
+                words_1 = value_words(e1[2])
+                if len(words_1) < 2:
+                    continue
                 for e2 in file_entries[i + 1:]:
+                    if is_dated(e2[3], e2[2]):
+                        continue
+                    if e1[2] == e2[2]:
+                        continue
                     pair_key = (min(e1[0], e2[0]), max(e1[0], e2[0]))
                     if pair_key in seen_pairs:
                         continue
-                    words_2 = {w.lower() for w in e2[2].split() if len(w) >= 4 and w.lower() not in noise_words}
+                    words_2 = value_words(e2[2])
                     shared = words_1 & words_2
-                    if len(shared) >= 2 and e1[2] != e2[2]:
+                    # Strongest signal: ≥3 shared value words AND a numeric token
+                    # in either entry that differs from the other (quantitative drift)
+                    nums_1 = {w for w in words_1 if any(c.isdigit() for c in w)}
+                    nums_2 = {w for w in words_2 if any(c.isdigit() for c in w)}
+                    numeric_drift = bool(
+                        (nums_1 or nums_2) and (nums_1 ^ nums_2)
+                    )
+                    if len(shared) >= 3 and numeric_drift:
                         seen_pairs.add(pair_key)
                         self.add_conflict(file=file_name, entry_a=e1[2], entry_b=e2[2])
                         conflicts.append({

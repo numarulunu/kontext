@@ -49,12 +49,14 @@ def sync(memory_dir: Path = None, dry_run: bool = False) -> dict:
         entries = parse_memory_file(md_file)
 
         for entry in entries:
-            # Check if this fact already exists in DB
-            existing = db.search_entries(entry["fact"][:50])
-            already_in_db = any(
-                e["file"] == md_file.name and e["fact"] == entry["fact"]
-                for e in existing
-            )
+            # Exact-match dedup against (file, fact). Previously used a 50-char
+            # LIKE prefix which produced false negatives and let duplicates
+            # accumulate on every sync.
+            existing = db.conn.execute(
+                "SELECT 1 FROM entries WHERE file = ? AND fact = ? LIMIT 1",
+                (md_file.name, entry["fact"]),
+            ).fetchone()
+            already_in_db = existing is not None
 
             if not already_in_db:
                 if dry_run:

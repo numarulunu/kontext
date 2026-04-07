@@ -106,7 +106,11 @@ def export_memory_index(db: KontextDB, output_dir: Path):
     lines = ["# Memory Index", ""]
 
     for filename in sorted(files.keys()):
-        _, description = _FILE_META.get(filename, ("", filename))
+        # DB file_meta is primary; hardcoded _FILE_META is fallback only.
+        meta = db.get_file_meta(filename)
+        description = meta["description"]
+        if not description:
+            description = _FILE_META.get(filename, ("", filename))[1]
         count = files[filename]
         name = filename.replace(".md", "").replace("_", " ").title()
         lines.append(f"- [{name}]({filename}) — {description} ({count} entries)")

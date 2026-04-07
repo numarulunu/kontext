@@ -421,9 +421,12 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                         embedded += 1
                 _logger.info(f"REINDEX: {len(entries)} files, {embedded} entries embedded")
                 return _mcp_result(req_id, f"Re-indexed {len(entries)} files. Embedded {embedded} entries in DB.")
-            except Exception:
-                _logger.info(f"REINDEX: {len(entries)} files (no DB embedding)")
-                return _mcp_result(req_id, f"Re-indexed {len(entries)} memory files.")
+            except Exception as e:
+                _logger.error(f"REINDEX DB embedding failed: {e}", exc_info=True)
+                return _mcp_result(
+                    req_id,
+                    f"Re-indexed {len(entries)} memory files. WARNING: DB embedding failed ({type(e).__name__}: {e}). Check _kontext.log."
+                )
         # --- Database-backed tools ---
 
         elif tool_name == "kontext_write":
