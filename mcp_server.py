@@ -318,6 +318,18 @@ _TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "kontext_digest",
+        "description": "Process conversation digests from the Backup System into memory candidates. Extracts facts, decisions, corrections, and status changes from past conversations.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "auto": {"type": "boolean", "description": "Auto-import high-confidence facts (grade >= min_grade). Default false — writes candidates file for review.", "default": False},
+                "dry_run": {"type": "boolean", "description": "Show what would be extracted without modifying (default false)", "default": False},
+                "min_grade": {"type": "integer", "description": "Minimum grade for auto-import (default 8)", "default": 8},
+            },
+        },
+    },
+    {
         "name": "kontext_decay",
         "description": "Run score decay on stale memory entries. Reduces grade of entries not accessed recently. Auto-exports affected files.",
         "inputSchema": {
@@ -578,6 +590,28 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                 return _mcp_result(req_id, "\n".join(lines))
             except Exception as e:
                 return _mcp_error(req_id, f"kontext_dream failed: {e}")
+
+        elif tool_name == "kontext_digest":
+            try:
+                from digest import process_digests
+                results = process_digests(
+                    auto=args.get("auto", False),
+                    dry_run=args.get("dry_run", False),
+                    min_grade=args.get("min_grade", 8),
+                )
+                lines = [
+                    "**Digest processing:**",
+                    f"  Files processed: {results['files_processed']}",
+                    f"  Candidates found: {results['candidates_found']}",
+                    f"  Fresh (new): {results['candidates_fresh']}",
+                    f"  Imported: {results['imported']}",
+                ]
+                if not args.get("auto") and not args.get("dry_run"):
+                    lines.append(f"  Candidates written to _digest_candidates.md for review.")
+                _logger.info(f"DIGEST: {results}")
+                return _mcp_result(req_id, "\n".join(lines))
+            except Exception as e:
+                return _mcp_error(req_id, f"kontext_digest failed: {e}")
 
         elif tool_name == "kontext_decay":
             try:
