@@ -5,6 +5,8 @@ Scores extracted nuggets 1-10 based on keyword patterns.
 This is a PRE-FILTER that runs before Claude sees the data.
 No AI involved — pure keyword and pattern matching.
 
+Bilingual: English + Romanian patterns.
+
 Score ranges:
     8-10: Explicitly stated, actionable, changes AI behavior
     5-7:  Useful context, not critical
@@ -35,6 +37,17 @@ _DECISION_PATTERNS = [
     r"\bthe move is\b",
     r"\bshipping\b",
     r"\blaunching\b",
+    # Romanian
+    r"\bam decis\b",
+    r"\bmerg pe\b",
+    r"\bm-am hotărât\b",
+    r"\bo să\b",
+    r"\bvreau să\b",
+    r"\brenunț la\b",
+    r"\bde acum\b",
+    r"\bplanul e\b",
+    r"\blivrez\b",
+    r"\blansez\b",
 ]
 
 # Identity markers — who the user is
@@ -51,6 +64,17 @@ _IDENTITY_PATTERNS = [
     r"\bmy brand\b",
     r"\bmy business\b",
     r"\bmy company\b",
+    # Romanian
+    r"\beu sunt\b",
+    r"\bnumele meu\b",
+    r"\blucrez ca\b",
+    r"\blucrez la\b",
+    r"\blocuiesc în\b",
+    r"\bstau în\b",
+    r"\bpredau\b",
+    r"\bbrandul meu\b",
+    r"\bafacerea mea\b",
+    r"\bfirma mea\b",
 ]
 
 # Preference markers — what the user wants/doesn't want
@@ -67,6 +91,17 @@ _PREFERENCE_PATTERNS = [
     r"\bstop doing\b",
     r"\bdon't ever\b",
     r"\bmake sure\b.*\balways\b",
+    # Romanian
+    r"\bprefer\b",
+    r"\burăsc\b",
+    r"\bîmi place\b",
+    r"\bnu vreau\b",
+    r"\bnu-mi place\b",
+    r"\bam nevoie\b",
+    r"\bnu mai\b",
+    r"\bmereu\b",
+    r"\bniciodată\b",
+    r"\blasă\b.*\bmereu\b",
 ]
 
 # Financial markers — money, costs, pricing
@@ -84,6 +119,16 @@ _FINANCIAL_PATTERNS = [
     r"\bstripe\b",
     r"\bPFA\b",
     r"\bANAF\b",
+    # Romanian
+    r"\bpreț\b",
+    r"\bvenit\b",
+    r"\bsalariu\b",
+    r"\bfactură\b",
+    r"\bplată\b",
+    r"\bimpozit\b",
+    r"\btaxe\b",
+    r"\bchirie\b",
+    r"\bcontract\b",
 ]
 
 # Project status markers — clear outcomes
@@ -99,6 +144,15 @@ _PROJECT_PATTERNS = [
     r"\bversion\b",
     r"\bmilestone\b",
     r"\bdeadline\b",
+    # Romanian
+    r"\bam lansat\b",
+    r"\bam livrat\b",
+    r"\bam terminat\b",
+    r"\bs-a blocat\b",
+    r"\bam renunțat\b",
+    r"\bam pivotat\b",
+    r"\bversiune\b",
+    r"\btermen\b",
 ]
 
 # AI interaction feedback — how Claude should behave
@@ -114,11 +168,18 @@ _AI_FEEDBACK_PATTERNS = [
     r"\bkeep in mind\b",
     r"\bfeedback\b.*\bclaude\b",
     r"\bclaude\b.*\bfeedback\b",
+    # Romanian
+    r"\bnu mai\b.*\bîntreba\b",
+    r"\boprește-te\b",
+    r"\bnu asta\b",
+    r"\bdata viitoare\b",
+    r"\bține minte\b",
+    r"\bnu uita\b",
 ]
 
 # Emotional depth — long personal messages (scored by length + pronouns)
 _PERSONAL_PRONOUNS = re.compile(
-    r"\b(?:I|my|me|myself|I'm|I've|I'd|I'll)\b", re.IGNORECASE
+    r"\b(?:I|my|me|myself|I'm|I've|I'd|I'll|eu|meu|mea|mei|mele|mine|mă|mi-)\b", re.IGNORECASE
 )
 
 # Noise markers — low-value content
@@ -133,6 +194,9 @@ _NOISE_PATTERNS = [
     r"\btest\b.*\btest\b",
     r"\bfixing\b.*\bbug\b",
     r"\bbug\b.*\bfixing\b",
+    # Romanian
+    r"^(?:mulțumesc|mersi|ok|da|nu|bine|super|perfect|gata|sigur)[\.\!\?]?\s*$",
+    r"^(?:salut|bună|hei|neața|bună dimineața|bună seara)\b",
 ]
 
 # Compile all patterns for efficiency
@@ -267,26 +331,27 @@ def grade_entry(entry: dict) -> int:
 
 
 def _detect_language_warning(messages: list[dict]) -> str | None:
-    """Check if messages are predominantly non-English. Returns warning or None.
+    """Check if messages are predominantly non-English/Romanian. Returns warning or None.
 
-    Grading patterns are English-only. Non-English messages will score
+    Grading patterns support English + Romanian. Other languages will score
     artificially low, causing under-extraction. This warns the user.
     """
     if not messages:
         return None
-    # Sample up to 20 messages, check for common English words
+    # Sample up to 20 messages, check for common English/Romanian words
     sample = messages[:20]
     english_markers = {"the", "and", "is", "to", "in", "for", "of", "a", "it", "that"}
-    english_count = 0
+    romanian_markers = {"și", "în", "la", "de", "cu", "pe", "nu", "că", "din", "sunt"}
+    supported_count = 0
     for msg in sample:
         words = set(msg.get("text", "").lower().split()[:30])
-        if words & english_markers:
-            english_count += 1
-    ratio = english_count / len(sample)
+        if words & english_markers or words & romanian_markers:
+            supported_count += 1
+    ratio = supported_count / len(sample)
     if ratio < 0.3:
         return (
-            f"WARNING: Only {english_count}/{len(sample)} sampled messages appear English. "
-            f"Grading patterns are English-only — non-English messages may score artificially low."
+            f"WARNING: Only {supported_count}/{len(sample)} sampled messages appear English/Romanian. "
+            f"Grading patterns support EN+RO only — other languages may score artificially low."
         )
     return None
 

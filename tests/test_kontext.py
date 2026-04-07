@@ -240,6 +240,43 @@ class TestBrainstorm:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Grading — Romanian patterns
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestGradingRomanian:
+    def test_romanian_decision_scores_high(self):
+        from pipeline.grading import grade_entry
+        score = grade_entry({"text": "Am decis să merg pe varianta cu Stripe pentru plăți", "role": "user"})
+        assert score >= 7, f"Romanian decision should score 7+, got {score}"
+
+    def test_romanian_identity_scores_high(self):
+        from pipeline.grading import grade_entry
+        score = grade_entry({"text": "Eu sunt profesor de canto și locuiesc în Constanța", "role": "user"})
+        assert score >= 7, f"Romanian identity should score 7+, got {score}"
+
+    def test_romanian_noise_scores_low(self):
+        from pipeline.grading import grade_entry
+        score = grade_entry({"text": "mersi", "role": "user"})
+        assert score <= 3, f"Romanian noise should score 3 or less, got {score}"
+
+    def test_romanian_financial_scores_high(self):
+        from pipeline.grading import grade_entry
+        score = grade_entry({"text": "Am primit o factură de 500 lei pentru impozit", "role": "user"})
+        assert score >= 7, f"Romanian financial should score 7+, got {score}"
+
+    def test_bilingual_message_scores_high(self):
+        from pipeline.grading import grade_entry
+        score = grade_entry({"text": "Am decis to switch to Stripe, merg pe varianta asta from now on", "role": "user"})
+        assert score >= 8, f"Bilingual decision should score 8+, got {score}"
+
+    def test_language_detection_accepts_romanian(self):
+        from pipeline.grading import _detect_language_warning
+        messages = [{"text": "Am decis să fac asta și să merg pe varianta cu Stripe"} for _ in range(10)]
+        warning = _detect_language_warning(messages)
+        assert warning is None, f"Romanian should be recognized as supported: {warning}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MCP server importability
 # ─────────────────────────────────────────────────────────────────────────────
 

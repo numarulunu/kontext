@@ -59,30 +59,33 @@ _log = logging.getLogger("kontext.digest")
 # ---------------------------------------------------------------------------
 
 _HIGH_SIGNAL_PATTERNS = [
-    # Decisions
-    (re.compile(r"\b(I('m| am) going (with|to)|decided|choosing|switching to|killing|dropping|cancell?ing)\b", re.I), "decision", 8),
-    # Facts about self
-    (re.compile(r"\b(I have|I got|I('m| am)|my .+ is|I started|I stopped|I moved|I bought|I sold)\b", re.I), "self_fact", 6),
-    # Corrections
-    (re.compile(r"\b(actually|no,? it'?s|correction|not \d+,? (it'?s|but) \d+|wrong|update that)\b", re.I), "correction", 9),
-    # Status changes
-    (re.compile(r"\b(is live|launched|shipped|deployed|stalled|paused|cancelled|finished|completed)\b", re.I), "status_change", 8),
-    # Financial
-    (re.compile(r"\b(\$\d+|€\d+|\d+ ?(RON|EUR|USD|lei)|revenue|income|tax|invoice|PFA|ANAF)\b", re.I), "financial", 7),
-    # Preferences / feedback
-    (re.compile(r"\b(don'?t|stop|never|always|I (like|prefer|want|hate|need)|from now on)\b", re.I), "preference", 7),
-    # People
-    (re.compile(r"\b(Luiza|mama|mother|student|client|friend)\b", re.I), "people", 6),
-    # Goals / plans
-    (re.compile(r"\b(goal|plan|target|deadline|by (January|February|March|April|May|June|July|August|September|October|November|December))\b", re.I), "goal", 7),
-    # Numbers that matter
-    (re.compile(r"\b\d{2,}\s*(students?|reviews?|subscribers?|followers?|clients?|lessons?|sessions?)\b", re.I), "metric", 8),
+    # Decisions (EN + RO)
+    (re.compile(r"\b(I('m| am) going (with|to)|decided|choosing|switching to|killing|dropping|cancell?ing|am decis|merg pe|m-am hotărât|renunț la|vreau să)\b", re.I), "decision", 8),
+    # Facts about self (EN + RO)
+    (re.compile(r"\b(I have|I got|I('m| am)|my .+ is|I started|I stopped|I moved|I bought|I sold|eu sunt|am început|m-am mutat|am cumpărat|am vândut)\b", re.I), "self_fact", 6),
+    # Corrections (EN + RO)
+    (re.compile(r"\b(actually|no,? it'?s|correction|not \d+,? (it'?s|but) \d+|wrong|update that|de fapt|nu e așa|am greșit|corecție)\b", re.I), "correction", 9),
+    # Status changes (EN + RO)
+    (re.compile(r"\b(is live|launched|shipped|deployed|stalled|paused|cancelled|finished|completed|am lansat|am livrat|s-a blocat|am terminat|am anulat|e live)\b", re.I), "status_change", 8),
+    # Financial (EN + RO)
+    (re.compile(r"\b(\$\d+|€\d+|\d+ ?(RON|EUR|USD|lei)|revenue|income|tax|invoice|PFA|ANAF|venit|factură|impozit|plată|taxe)\b", re.I), "financial", 7),
+    # Preferences / feedback (EN + RO)
+    (re.compile(r"\b(don'?t|stop|never|always|I (like|prefer|want|hate|need)|from now on|prefer|urăsc|îmi place|nu vreau|am nevoie|de acum)\b", re.I), "preference", 7),
+    # People (EN + RO)
+    (re.compile(r"\b(Luiza|mama|mother|student|client|friend|elev|elevă|prieten|prietenă)\b", re.I), "people", 6),
+    # Goals / plans (EN + RO)
+    (re.compile(r"\b(goal|plan|target|deadline|by (January|February|March|April|May|June|July|August|September|October|November|December)|obiectiv|termen|până în (ianuarie|februarie|martie|aprilie|mai|iunie|iulie|august|septembrie|octombrie|noiembrie|decembrie))\b", re.I), "goal", 7),
+    # Numbers that matter (EN + RO)
+    (re.compile(r"\b\d{2,}\s*(students?|reviews?|subscribers?|followers?|clients?|lessons?|sessions?|elevi|recenzii|abonați|clienți|lecții|ședințe)\b", re.I), "metric", 8),
 ]
 
 # Patterns that indicate noise (skip these messages)
 _NOISE_PATTERNS = [
     re.compile(r"^\s*(ok|yes|no|sure|thanks|thank you|got it|cool|nice|perfect|good|great|fine|hmm|hm)\s*[.!]?\s*$", re.I),
     re.compile(r"^\s*(hello|hi|hey|yo)\s*[.!]?\s*$", re.I),
+    # Romanian noise
+    re.compile(r"^\s*(da|nu|bine|ok|mersi|mulțumesc|super|perfect|gata|sigur)\s*[.!]?\s*$", re.I),
+    re.compile(r"^\s*(salut|bună|hei|neața)\s*[.!]?\s*$", re.I),
     re.compile(r"^\[Tool:", re.I),  # Tool use markers in digests
     re.compile(r"^#+\s*\[", re.I),  # Timestamp headers
     re.compile(r"Base directory for this skill:", re.I),  # Skill system messages
