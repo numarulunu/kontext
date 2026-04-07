@@ -50,8 +50,29 @@ def find_memory_dir() -> Path:
 
 
 def estimate_tokens(text: str) -> int:
-    """Rough token estimate: ~4 chars per token for English."""
-    return len(text) // 4
+    """Token estimate with content-type awareness.
+
+    Base rate: ~4 chars/token for English prose.
+    Adjustments: code-heavy content averages ~3.5 chars/token,
+    URLs/paths average ~3 chars/token, pure ASCII prose ~4.2.
+    """
+    if not text:
+        return 0
+    # Count content signals
+    lines = text.split("\n")
+    code_lines = sum(1 for l in lines if l.startswith("    ") or l.startswith("\t") or l.startswith("```"))
+    url_chars = sum(len(w) for w in text.split() if w.startswith("http") or "/" in w and len(w) > 15)
+
+    total_chars = len(text)
+    # Weighted average of ratios
+    code_ratio = code_lines / max(len(lines), 1)
+    url_ratio = url_chars / max(total_chars, 1)
+
+    # Effective chars-per-token: lower = more tokens per char
+    cpt = 4.0 - (code_ratio * 0.5) - (url_ratio * 1.0)
+    cpt = max(cpt, 2.8)  # Floor at 2.8
+
+    return int(total_chars / cpt)
 
 
 def analyze_file(filepath: Path) -> dict:

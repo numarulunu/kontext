@@ -22,6 +22,9 @@ SETTINGS_PATH = CLAUDE_DIR / "settings.json"
 
 # --- Hook definitions ---
 
+# Model used by PostCompact agent hook — update when Anthropic deprecates
+HAIKU_MODEL = "claude-haiku-4-5-20251001"
+
 # PostCompact agent — saves memory via direct Python calls (no MCP dependency)
 KONTEXT_POSTCOMPACT = {
     "hooks": [
@@ -88,9 +91,6 @@ KONTEXT_SESSION_SAVE = {
 }
 
 # UserPromptSubmit hook 3: Memory save (every 60s)
-# Model used by PostCompact agent hook — update when Anthropic deprecates
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
-
 KONTEXT_MEMORY_SAVE = {
     "hooks": [
         {

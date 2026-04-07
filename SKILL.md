@@ -12,7 +12,7 @@ You manage a memory library system. Memory files live in the Claude Code project
 
 ## Paths
 
-- **Memory dir:** Find by scanning `~/.claude/projects/*/memory/` — use the one with the most `.md` files (currently `C--Users-Gaming-PC-Desktop-Claude-Personal-Context/memory/`)
+- **Memory dir:** Find by scanning `~/.claude/projects/*/memory/` — use the one with the most `.md` files (auto-detected at runtime)
 - **Kontext tools:** `~/Desktop/Claude/Kontext/`
 - **Backup System:** `~/Desktop/Claude/Backup System/`
 - **Digest dir:** `~/Desktop/Claude/Backup System/_digests/`

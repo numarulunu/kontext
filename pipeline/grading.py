@@ -266,11 +266,40 @@ def grade_entry(entry: dict) -> int:
     return max(1, min(10, score))
 
 
+def _detect_language_warning(messages: list[dict]) -> str | None:
+    """Check if messages are predominantly non-English. Returns warning or None.
+
+    Grading patterns are English-only. Non-English messages will score
+    artificially low, causing under-extraction. This warns the user.
+    """
+    if not messages:
+        return None
+    # Sample up to 20 messages, check for common English words
+    sample = messages[:20]
+    english_markers = {"the", "and", "is", "to", "in", "for", "of", "a", "it", "that"}
+    english_count = 0
+    for msg in sample:
+        words = set(msg.get("text", "").lower().split()[:30])
+        if words & english_markers:
+            english_count += 1
+    ratio = english_count / len(sample)
+    if ratio < 0.3:
+        return (
+            f"WARNING: Only {english_count}/{len(sample)} sampled messages appear English. "
+            f"Grading patterns are English-only — non-English messages may score artificially low."
+        )
+    return None
+
+
 def grade_messages(messages: list[dict]) -> list[dict]:
     """
     Grade a list of messages in-place and return them.
     Adds a 'grade' key to each message dict.
+    Prints a warning if messages appear to be non-English.
     """
+    warning = _detect_language_warning(messages)
+    if warning:
+        print(f"  [LANG] {warning}")
     for msg in messages:
         msg["grade"] = grade_entry(msg)
     return messages

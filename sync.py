@@ -71,9 +71,13 @@ def _run_decay(db) -> int:
     return decayed
 
 
-def sync(memory_dir: Path = None, dry_run: bool = False) -> dict:
+def sync(memory_dir: Path = None, dry_run: bool = False, db=None) -> dict:
     """Compare flat files with DB, import any entries that exist in files but not in DB.
-    Returns {synced: int, skipped: int, files_checked: int}."""
+    Returns {synced: int, skipped: int, files_checked: int}.
+
+    Args:
+        db: Optional KontextDB instance. If None, uses production DB.
+    """
     from db import KontextDB
     from migrate import parse_memory_file
     from mcp_server import find_memory_dir
@@ -84,7 +88,9 @@ def sync(memory_dir: Path = None, dry_run: bool = False) -> dict:
             log.warning("SYNC: No memory directory found")
             return {"synced": 0, "skipped": 0, "files_checked": 0}
 
-    db = KontextDB()
+    owns_db = db is None
+    if owns_db:
+        db = KontextDB()
     synced = 0
     skipped = 0
     files_checked = 0
@@ -143,7 +149,8 @@ def sync(memory_dir: Path = None, dry_run: bool = False) -> dict:
     # Run dream consolidation at most once per day
     dreamed = _maybe_dream(db)
 
-    db.close()
+    if owns_db:
+        db.close()
     return {"synced": synced, "skipped": skipped, "files_checked": files_checked, "decayed": decayed, "dreamed": dreamed}
 
 

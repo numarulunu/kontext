@@ -496,18 +496,26 @@ class KontextDB:
             return list(struct.unpack(f'{count}f', blob))
         return None
 
-    def semantic_search(self, query_embedding: list[float], limit: int = 10, min_grade: float = 0) -> list[dict]:
-        """Find entries most similar to query_embedding using cosine similarity."""
+    def semantic_search(self, query_embedding: list[float], limit: int = 10,
+                        min_grade: float = 0, file: str = None) -> list[dict]:
+        """Find entries most similar to query_embedding using cosine similarity.
+
+        Args:
+            file: Optional filter to only search within a specific file (reduces memory).
+        """
         import math
 
         query_mag = math.sqrt(sum(x * x for x in query_embedding))
         if query_mag == 0:
             return []
 
-        rows = self.conn.execute(
-            "SELECT id, file, fact, source, grade, tier, embedding FROM entries WHERE embedding IS NOT NULL AND grade >= ?",
-            (min_grade,)
-        ).fetchall()
+        sql = "SELECT id, file, fact, source, grade, tier, embedding FROM entries WHERE embedding IS NOT NULL AND grade >= ?"
+        params: list = [min_grade]
+        if file:
+            sql += " AND file = ?"
+            params.append(file)
+
+        rows = self.conn.execute(sql, params).fetchall()
 
         results = []
         for row in rows:

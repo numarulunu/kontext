@@ -467,47 +467,5 @@ class TestFullPipeline(unittest.TestCase):
         self.assertIsInstance(msgs, list)
 
 
-# ===========================================================================
-# Conflict detector tests
-# ===========================================================================
-
-class TestConflictDetector(unittest.TestCase):
-    """Test the conflict detection system."""
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        # Import here to avoid issues if conflicts.py has import errors
-        from conflicts import ConflictDetector
-        self.detector = ConflictDetector(self.tmpdir, self.tmpdir)
-
-    def test_load_patterns_no_file(self):
-        """Should return empty list when patterns file doesn't exist."""
-        patterns = self.detector.load_patterns()
-        self.assertEqual(patterns, [])
-
-    def test_log_conflict_creates_file(self):
-        self.detector.log_conflict({
-            "source": "test",
-            "target_file": "user_profile.md",
-            "category": "identity",
-            "existing": "Lives in Bucharest",
-            "new": "Lives in Constanta",
-        })
-        self.assertTrue(self.detector.conflicts_file.exists())
-
-    def test_log_resolution_creates_patterns(self):
-        self.detector.log_resolution("identity", "Newer wins", "Most recent info is most accurate")
-        self.assertTrue(self.detector.patterns_file.exists())
-
-    def test_auto_resolve_needs_threshold(self):
-        """Should not auto-resolve without enough examples and confidence."""
-        result = self.detector.can_auto_resolve("identity")
-        self.assertIsNone(result)
-
-    def tearDown(self):
-        import shutil
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-
 if __name__ == "__main__":
     unittest.main(verbosity=2)

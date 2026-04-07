@@ -30,7 +30,19 @@ from db import KontextDB
 __version__ = "1.0"
 
 LOG = Path(__file__).parent / "_digest.log"
-DIGEST_DIR = Path.home() / "Desktop" / "Claude" / "Backup System" / "_digests"
+def _find_digest_dir() -> Path:
+    """Auto-detect digest directory. Checks common locations."""
+    candidates = [
+        Path.home() / "Desktop" / "Claude" / "Backup System" / "_digests",
+        Path.home() / "Documents" / "Claude" / "Backup System" / "_digests",
+        Path(__file__).parent.parent / "Backup System" / "_digests",
+    ]
+    for d in candidates:
+        if d.exists():
+            return d
+    return candidates[0]  # Default to first candidate
+
+DIGEST_DIR = _find_digest_dir()
 MANIFEST = DIGEST_DIR / "_manifest.md"
 PENDING_FLAG = DIGEST_DIR.parent / "_digest-pending"
 CANDIDATES_FILE = Path(__file__).parent / "_digest_candidates.md"
