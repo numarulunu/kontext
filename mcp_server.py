@@ -430,10 +430,12 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
 
         if tool_name == "kontext_search":
             query = args.get("query", "")
-            top_k = args.get("top_k", 5)
+            top_k = min(args.get("top_k", 5), 20)  # Cap results
 
             if not query:
                 return _mcp_error(req_id, "query is required")
+            if len(query) > 500:
+                query = query[:500]  # Truncate silently
 
             results = search(query, entries, top_k)
             output_lines = [f"**Kontext Search:** {len(results)} files matched\n"]
@@ -483,9 +485,17 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                 if not file or not fact:
                     return _mcp_error(req_id, "file and fact are required")
 
+                # Input validation — prevent OOM on embedding and DB bloat
+                if len(fact) > 5000:
+                    return _mcp_error(req_id, f"fact too long ({len(fact)} chars, max 5000)")
+                if len(file) > 200:
+                    return _mcp_error(req_id, f"file name too long ({len(file)} chars, max 200)")
+
                 source = args.get("source", "")
-                grade = args.get("grade", 5)
+                grade = min(10, max(1, args.get("grade", 5)))
                 tier = args.get("tier", "active")
+                if tier not in ("active", "historical", "cold"):
+                    tier = "active"
 
                 entry_id = db.add_entry(file=file, fact=fact, source=source, grade=grade, tier=tier)
 
@@ -494,8 +504,8 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                     model = get_model()
                     vec = model.encode(fact).tolist()
                     db.store_embedding(entry_id, vec)
-                except Exception:
-                    pass  # Embedding is optional
+                except Exception as embed_err:
+                    _logger.warning(f"EMBED FAILED for entry #{entry_id}: {type(embed_err).__name__}: {embed_err}")
 
                 # Auto-export the affected file and update MEMORY.md
                 md_content = export_file(db, file)

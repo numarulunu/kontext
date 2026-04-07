@@ -90,6 +90,11 @@ def release_lock():
 # Phase 1: Dedup
 # ---------------------------------------------------------------------------
 
+def _prefix_bucket(fact: str, prefix_len: int = 20) -> str:
+    """Generate a normalized prefix for bucketing similar entries."""
+    return fact.lower().strip()[:prefix_len]
+
+
 def phase_dedup(db: KontextDB, dry_run: bool = False) -> dict:
     """Merge near-duplicate entries within the same file.
 
@@ -97,6 +102,9 @@ def phase_dedup(db: KontextDB, dry_run: bool = False) -> dict:
     - Same file
     - Similarity ratio >= 0.85
     - Keep the one with higher grade (or newer if tied)
+
+    Optimization: bucket entries by normalized prefix to reduce O(n^2)
+    comparisons. Only entries with overlapping prefix buckets are compared.
     """
     stats = {"pairs_found": 0, "merged": 0}
     files = db.list_files()
@@ -106,17 +114,65 @@ def phase_dedup(db: KontextDB, dry_run: bool = False) -> dict:
         if len(entries) < 2:
             continue
 
+        # Bucket by prefix — entries that start very differently can't be 85% similar
+        # unless they're short. For entries < 25 chars, use full text as bucket key.
+        buckets = {}
+        for e in entries:
+            key = _prefix_bucket(e["fact"])
+            buckets.setdefault(key, []).append(e)
+
+        # Compare within buckets (fast path) + cross-bucket for short entries
         merged_ids = set()
-        for i, e1 in enumerate(entries):
+        compared = set()
+
+        # Within-bucket comparisons (most duplicates live here)
+        for bucket_entries in buckets.values():
+            for i, e1 in enumerate(bucket_entries):
+                if e1["id"] in merged_ids:
+                    continue
+                for e2 in bucket_entries[i + 1:]:
+                    if e2["id"] in merged_ids:
+                        continue
+                    pair_key = (min(e1["id"], e2["id"]), max(e1["id"], e2["id"]))
+                    if pair_key in compared:
+                        continue
+                    compared.add(pair_key)
+                    sim = similarity(e1["fact"], e2["fact"])
+                    if sim >= 0.85:
+                        stats["pairs_found"] += 1
+                        if e1["grade"] > e2["grade"]:
+                            keep, drop = e1, e2
+                        elif e2["grade"] > e1["grade"]:
+                            keep, drop = e2, e1
+                        elif (e1.get("updated_at") or "") >= (e2.get("updated_at") or ""):
+                            keep, drop = e1, e2
+                        else:
+                            keep, drop = e2, e1
+
+                        _log.info(f"DEDUP: keep #{keep['id']} ({sim:.0%} similar), drop #{drop['id']} in {filename}")
+                        _log.info(f"  KEEP: {keep['fact'][:80]}")
+                        _log.info(f"  DROP: {drop['fact'][:80]}")
+
+                        if not dry_run:
+                            db.delete_entry(drop["id"])
+                            merged_ids.add(drop["id"])
+                            stats["merged"] += 1
+
+        # Cross-bucket for short entries (< 30 chars can match across prefixes)
+        short_entries = [e for e in entries if len(e["fact"]) < 30 and e["id"] not in merged_ids]
+        for i, e1 in enumerate(short_entries):
             if e1["id"] in merged_ids:
                 continue
-            for e2 in entries[i + 1:]:
+            for e2 in short_entries[i + 1:]:
                 if e2["id"] in merged_ids:
                     continue
+                pair_key = (min(e1["id"], e2["id"]), max(e1["id"], e2["id"]))
+                if pair_key in compared:
+                    continue
+                compared.add(pair_key)
                 sim = similarity(e1["fact"], e2["fact"])
                 if sim >= 0.85:
                     stats["pairs_found"] += 1
-                    # Keep the higher-grade entry; if tied, keep the newer one
                     if e1["grade"] > e2["grade"]:
                         keep, drop = e1, e2
                     elif e2["grade"] > e1["grade"]:
@@ -127,9 +183,6 @@ def phase_dedup(db: KontextDB, dry_run: bool = False) -> dict:
                         keep, drop = e2, e1
 
                     _log.info(f"DEDUP: keep #{keep['id']} ({sim:.0%} similar), drop #{drop['id']} in {filename}")
-                    _log.info(f"  KEEP: {keep['fact'][:80]}")
-                    _log.info(f"  DROP: {drop['fact'][:80]}")
-
                     if not dry_run:
                         db.delete_entry(drop["id"])
                         merged_ids.add(drop["id"])

@@ -96,25 +96,26 @@ def sync(memory_dir: Path = None, dry_run: bool = False) -> dict:
         files_checked += 1
         entries = parse_memory_file(md_file)
 
+        # Cache DB facts for this file — avoids re-querying per entry
+        db_facts_rows = db.conn.execute(
+            "SELECT fact FROM entries WHERE file = ?", (md_file.name,)
+        ).fetchall()
+        db_facts = [row[0] for row in db_facts_rows]
+        db_facts_lower = [f.lower() for f in db_facts]
+        db_facts_set = set(db_facts)  # For exact match (O(1))
+
         for entry in entries:
-            # Dedup: exact match first (fast), then fuzzy 85% similarity
-            # check against same-file entries (catches near-duplicates).
-            existing = db.conn.execute(
-                "SELECT 1 FROM entries WHERE file = ? AND fact = ? LIMIT 1",
-                (md_file.name, entry["fact"]),
-            ).fetchone()
-            if not existing:
-                # Fuzzy check — only load same-file entries to keep it fast
-                same_file = db.conn.execute(
-                    "SELECT fact FROM entries WHERE file = ?",
-                    (md_file.name,),
-                ).fetchall()
+            # Dedup: exact match first (fast O(1)), then fuzzy 85% similarity.
+            if entry["fact"] in db_facts_set:
+                already_in_db = True
+            else:
+                # Fuzzy check against cached facts
                 from difflib import SequenceMatcher
-                existing = any(
-                    SequenceMatcher(None, entry["fact"].lower(), row[0].lower()).ratio() >= 0.85
-                    for row in same_file
+                entry_lower = entry["fact"].lower()
+                already_in_db = any(
+                    SequenceMatcher(None, entry_lower, f).ratio() >= 0.85
+                    for f in db_facts_lower
                 )
-            already_in_db = bool(existing)
 
             if not already_in_db:
                 if dry_run:

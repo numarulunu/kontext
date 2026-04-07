@@ -249,14 +249,22 @@ def generate_report(memory_dir: Path, target_file: str = None) -> str:
 
     lines.append("")
 
-    # Conflicts check
-    conflicts_file = memory_dir / "_conflicts.md"
-    if conflicts_file.exists():
-        content = conflicts_file.read_text(encoding="utf-8")
-        pending = content.count("**Status:** PENDING")
-        lines.append(f"## Conflicts: {pending} pending")
-    else:
-        lines.append("## Conflicts: none")
+    # Conflicts check — from SQLite DB (single source of truth)
+    try:
+        from db import KontextDB
+        _db = KontextDB()
+        pending_conflicts = _db.get_pending_conflicts()
+        _db.close()
+        if pending_conflicts:
+            lines.append(f"## Conflicts: {len(pending_conflicts)} pending")
+            for c in pending_conflicts[:5]:
+                lines.append(f"  - #{c['id']} [{c['file']}] \"{c['entry_a'][:40]}\" vs \"{c['entry_b'][:40]}\"")
+            if len(pending_conflicts) > 5:
+                lines.append(f"  ... and {len(pending_conflicts) - 5} more")
+        else:
+            lines.append("## Conflicts: none")
+    except Exception:
+        lines.append("## Conflicts: could not check (DB unavailable)")
 
     lines.append("")
 

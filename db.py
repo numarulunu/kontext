@@ -14,6 +14,24 @@ from pathlib import Path
 import struct
 
 
+class _Transaction:
+    """Context manager for SQLite transactions with rollback on failure."""
+
+    def __init__(self, conn):
+        self.conn = conn
+
+    def __enter__(self):
+        self.conn.execute("BEGIN IMMEDIATE")
+        return self.conn
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is None:
+            self.conn.commit()
+        else:
+            self.conn.rollback()
+        return False  # re-raise exceptions
+
+
 class KontextDB:
     """SQLite-backed memory database."""
 
@@ -104,6 +122,17 @@ class KontextDB:
         cursor = self.conn.execute(sql, params)
         self.conn.commit()
         return cursor
+
+    def transaction(self):
+        """Context manager for explicit transactions. Use for multi-step operations.
+
+        Usage:
+            with db.transaction():
+                db.conn.execute(...)
+                db.conn.execute(...)
+            # auto-commits on success, rolls back on exception
+        """
+        return _Transaction(self.conn)
 
     def list_tables(self):
         cursor = self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -461,7 +490,9 @@ class KontextDB:
         row = self.conn.execute("SELECT embedding FROM entries WHERE id = ?", (entry_id,)).fetchone()
         if row and row[0]:
             blob = row[0]
-            count = len(blob) // 4  # 4 bytes per float
+            if len(blob) % 4 != 0 or len(blob) == 0:
+                return None  # Malformed BLOB — skip instead of crash
+            count = len(blob) // 4
             return list(struct.unpack(f'{count}f', blob))
         return None
 
