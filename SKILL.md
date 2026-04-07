@@ -39,8 +39,10 @@ Memory should be written via the Kontext MCP tools, NOT raw Edit/Write. The MCP 
 | `mcp__kontext__kontext_conflicts` | Detect/list/resolve conflicts. Actions: detect, list, resolve |
 | `mcp__kontext__kontext_relate` | Add a relation between two entities (knowledge graph) |
 | `mcp__kontext__kontext_decay` | Decay grades on stale entries |
-| `mcp__kontext__kontext_session` | Save session state |
+| `mcp__kontext__kontext_session` | Save/load session state (project, status, next_step, key_decisions, summary, files_touched) |
 | `mcp__kontext__kontext_reindex` | Rebuild the in-memory index and DB embeddings |
+| `mcp__kontext__kontext_dream` | Run automated memory consolidation (dedup, normalize, resolve, compress, purge) |
+| `mcp__kontext__kontext_digest` | Process conversation digests into memory candidates |
 
 ## MEMORY.md — The Live Index
 
@@ -123,22 +125,28 @@ Interactive onboarding — build the user's initial memory library from a conver
 
 Process pending conversation digest into memory updates.
 
+**Pre-extraction (automated):** `digest.py` runs pattern-based extraction to identify high-signal user messages (decisions, status changes, metrics, self-facts). It writes candidates to `_digest_candidates.md` for review. The `kontext_digest` MCP tool can trigger this.
+
+**LLM distillation and import:**
+
 1. Read the manifest at `~/Desktop/Claude/Backup System/_digests/_manifest.md`
-2. Read ALL memory files (start with MEMORY.md, then every file it references)
-3. For each project digest in the manifest, launch a subagent (`Agent` tool, `run_in_background: true`) to process in parallel. Each subagent:
-   - Reads the full project digest file
+2. Read `~/Desktop/Claude/Kontext/_digest_candidates.md` if it exists — these are pre-scored candidates from digest.py. Use them as a starting point.
+3. Read ALL memory files (start with MEMORY.md, then every file it references)
+4. For each project digest in the manifest, launch a subagent (`Agent` tool, `run_in_background: true`) to process in parallel. Each subagent:
+   - Reads the full project digest file (and any pre-extracted candidates for that project)
    - Reads current memory files
+   - Distills raw user messages into atomic facts (e.g., "I have 42 students" → "Active students: 42")
    - Identifies NEW information worth persisting (project changes, decisions, struggles, goals, tools, relationship updates, health changes, AI feedback)
    - Returns structured proposals (does NOT edit files directly)
-4. Collect all proposals. Deduplicate via `mcp__kontext__kontext_query` before writing. Resolve conflicts — most recently dated info wins, unless `feedback_conflict_patterns.md` has a matching pattern.
-5. **Apply updates via `mcp__kontext__kontext_write`** — never raw Edit. The MCP tool updates DB, exports flat files, and broadcasts changes. Each entry must include a dated source tag like `[Claude 2026-04-07]` so the temporal-aware conflict detector treats updates as evolution, not contradictions.
-6. **If a topic cluster emerges that doesn't fit any existing file, create a new file** (Write the markdown shell, then `kontext_write` entries into it, then add to MEMORY.md).
-7. Do NOT duplicate existing info. Do NOT store ephemeral task details.
-8. If any digest file is missing, skip it and report which were skipped.
-9. After applying updates, run `mcp__kontext__kontext_conflicts` action="detect" to surface any new contradictions for the user to triage.
-10. Output bullet-point summary of changes.
-11. Delete the flag: `rm "$HOME/Desktop/Claude/Backup System/_digest-pending"`
-12. Auto-backup: run `bash ~/Desktop/Claude/Backup\ System/backup.sh "memory sync $(date '+%Y-%m-%d')"` in background.
+5. Collect all proposals. Deduplicate via `mcp__kontext__kontext_query` before writing. Resolve conflicts — most recently dated info wins, unless `feedback_conflict_patterns.md` has a matching pattern.
+6. **Apply updates via `mcp__kontext__kontext_write`** — never raw Edit. The MCP tool updates DB, exports flat files, and broadcasts changes. Each entry must include a dated source tag like `[Claude 2026-04-07]` so the temporal-aware conflict detector treats updates as evolution, not contradictions.
+7. **If a topic cluster emerges that doesn't fit any existing file, create a new file** (Write the markdown shell, then `kontext_write` entries into it, then add to MEMORY.md).
+8. Do NOT duplicate existing info. Do NOT store ephemeral task details.
+9. If any digest file is missing, skip it and report which were skipped.
+10. After applying updates, run `mcp__kontext__kontext_conflicts` action="detect" to surface any new contradictions for the user to triage.
+11. Output bullet-point summary of changes.
+12. Delete the flag: `rm "$HOME/Desktop/Claude/Backup System/_digest-pending"`
+13. Auto-backup: run `bash ~/Desktop/Claude/Backup\ System/backup.sh "memory sync $(date '+%Y-%m-%d')"` in background.
 
 ### `/kontext process-intake`
 

@@ -29,11 +29,13 @@ KONTEXT_POSTCOMPACT = {
             "type": "agent",
             "prompt": (
                 "Context was just compressed. Save state NOW before details are lost.\n\n"
-                "1. From the conversation summary, determine: project name, current status, next step, key decisions.\n"
+                "1. From the conversation summary, determine: project name, current status, next step, key decisions, "
+                "a 2-3 sentence conversation summary, and comma-separated list of files edited/discussed.\n"
                 "2. Get today's date by running via Bash: date +%Y-%m\n"
                 '3. Save session — run via Bash tool (replace placeholders with real values, escape single quotes):\n'
                 '   cd "$HOME/Desktop/Claude/Kontext" && python -c "from db import KontextDB; db = KontextDB(); '
-                "db.save_session(project='PROJECT', status='STATUS', next_step='NEXT', key_decisions='DECISIONS')\"\n"
+                "db.save_session(project='PROJECT', status='STATUS', next_step='NEXT', key_decisions='DECISIONS', "
+                "summary='SUMMARY', files_touched='FILES')\"\n"
                 "4. For any unsaved facts worth remembering, save each via Bash tool (use the date from step 2 for SOURCE):\n"
                 '   cd "$HOME/Desktop/Claude/Kontext" && python -c "from db import KontextDB; db = KontextDB(); '
                 "db.add_entry(file='FILENAME.md', fact='THE FACT', source='[Claude YYYY-MM]', grade=7, tier='active')\"\n\n"
@@ -85,7 +87,7 @@ KONTEXT_SESSION_SAVE = {
     ]
 }
 
-# UserPromptSubmit hook 3: Memory save (every 180s)
+# UserPromptSubmit hook 3: Memory save (every 60s)
 KONTEXT_MEMORY_SAVE = {
     "hooks": [
         {
@@ -93,11 +95,16 @@ KONTEXT_MEMORY_SAVE = {
             "command": (
                 'THROTTLE="$HOME/.claude/.kontext_memory_last"; NOW=$(date +%s); LAST=0; '
                 'test -f "$THROTTLE" && LAST=$(cat "$THROTTLE"); DIFF=$((NOW - LAST)); '
-                'if [ "$DIFF" -lt 180 ]; then echo \'{"suppressOutput":true}\'; '
+                'if [ "$DIFF" -lt 60 ]; then echo \'{"suppressOutput":true}\'; '
                 'else echo "$NOW" > "$THROTTLE"; '
-                'echo \'{"additionalContext":"[Kontext] MEMORY SAVE. Scan recent messages for facts, decisions, '
-                "preferences, corrections, status changes. Use kontext_query to check for duplicates, "
-                'then kontext_write for new entries. Silent."}\'; fi'
+                'echo \'{"additionalContext":"[Kontext] MEMORY SAVE. Check the last few user messages for: '
+                "decisions (switching tools, changing plans), self-facts (numbers, names, dates, status updates), "
+                "corrections (updating existing info), preferences (likes, dislikes, workflow choices), "
+                "project status changes (launched, stalled, killed, pivoted). "
+                "Skip: debugging details, code questions, greetings, acknowledgments. "
+                "Use kontext_query to check for duplicates, then kontext_write for genuinely new entries. "
+                "Include a dated source tag [Claude YYYY-MM]. Grade 8-10 for decisions/identity, 5-7 for context. "
+                'Silent."}\'; fi'
             ),
             "timeout": 2,
         }

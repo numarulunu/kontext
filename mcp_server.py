@@ -181,8 +181,27 @@ def search(query: str, entries: list[dict], top_k: int = 6) -> list[dict]:
     if not entries:
         return []
 
-    model = get_model()
-    import numpy as np
+    try:
+        model = get_model()
+        import numpy as np
+    except Exception:
+        # Graceful fallback: keyword match when sentence-transformers unavailable
+        query_lower = query.lower()
+        query_words = set(query_lower.split())
+        results = []
+        for entry in entries:
+            text = f"{entry.get('title', '')} {entry.get('description', '')} {entry.get('filename', '')}".lower()
+            overlap = sum(1 for w in query_words if w in text)
+            if overlap > 0:
+                results.append({
+                    "filename": entry["filename"],
+                    "title": entry["title"],
+                    "path": entry["path"],
+                    "score": overlap / max(len(query_words), 1),
+                    "description": entry["description"],
+                })
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results[:top_k]
 
     query_embedding = model.encode(query)
 
@@ -390,7 +409,7 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
             "id": req_id,
             "result": {
                 "protocolVersion": "2024-11-05",
-                "serverInfo": {"name": "kontext-memory", "version": "5.0.0"},
+                "serverInfo": {"name": "kontext-memory", "version": "6.0.0"},
                 "capabilities": {"tools": {"listChanged": False}},
             },
         }

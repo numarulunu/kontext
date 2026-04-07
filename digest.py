@@ -287,14 +287,28 @@ def route_to_file(project_name: str, candidate_type: str) -> str:
 # ---------------------------------------------------------------------------
 
 def write_candidates_file(candidates: list[dict], output_path: Path):
-    """Write candidates to a markdown file for review."""
+    """Write candidates to a markdown file for LLM distillation and review.
+
+    Format is designed for the /kontext process-digest subagents to read,
+    distill raw messages into atomic facts, and import via kontext_write.
+    """
     lines = [
-        "# Digest Candidates",
+        "# Digest Candidates — Awaiting Distillation",
         f"**Generated:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC",
         f"**Candidates:** {len(candidates)}",
         "",
-        "Review these candidates. To import, run `/kontext process-digest` with `--auto`",
-        "or manually add selected facts via `kontext_write`.",
+        "These are raw user messages extracted by pattern matching.",
+        "They need LLM distillation before import — convert each into atomic facts.",
+        "",
+        "**Distillation rules:**",
+        "- Convert raw message → 1-3 atomic facts (single statement per fact)",
+        "- Strip conversational filler, keep only the fact itself",
+        '- Example: "I have 42 active students right now, up from 38" →',
+        "  - `Active students: 42 (up from 38)` [grade 9, self_fact]",
+        "- Include dated source tag from the digest session date",
+        "- Grade 8-10 for decisions/identity/metrics, 5-7 for soft context",
+        "",
+        "Run `/kontext process-digest` to trigger LLM distillation and import.",
         "",
     ]
 
@@ -307,7 +321,7 @@ def write_candidates_file(candidates: list[dict], output_path: Path):
         lines.append("")
         for c in items:
             lines.append(f"- **[{c['type']}, g{c['grade']}]** {c['text']}")
-            lines.append(f"  → file: `{route_to_file(c['project'], c['type'])}`")
+            lines.append(f"  → target: `{route_to_file(c['project'], c['type'])}` | source: `{c.get('source', 'unknown')}`")
         lines.append("")
 
     output_path.write_text("\n".join(lines), encoding="utf-8")

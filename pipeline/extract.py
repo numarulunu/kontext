@@ -38,10 +38,11 @@ from grading import grade_messages
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-INTAKE_DIR = SCRIPT_DIR / "intake"
-CHUNKS_DIR = SCRIPT_DIR / "_chunks"
-MANIFEST_PATH = SCRIPT_DIR / "_processed.json"
-READY_FLAG = SCRIPT_DIR / "_processing-ready"
+PROJECT_DIR = SCRIPT_DIR.parent  # Kontext project root
+INTAKE_DIR = PROJECT_DIR / "intake"
+CHUNKS_DIR = PROJECT_DIR / "_chunks"
+MANIFEST_PATH = PROJECT_DIR / "_processed.json"
+READY_FLAG = PROJECT_DIR / "_processing-ready"
 
 
 # ---------------------------------------------------------------------------
