@@ -24,3 +24,6 @@ _conflicts.md
 _embeddings_cache.json
 kontext.db-wal
 kontext.db-shm
+_dream_last
+_dream.lock
+_dream.log

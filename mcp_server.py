@@ -307,6 +307,17 @@ _TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "kontext_dream",
+        "description": "Run memory consolidation (dream cycle). Deduplicates, normalizes dates, auto-resolves stale conflicts, compresses cold entries, purges dead ones.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "dry_run": {"type": "boolean", "description": "Report what would change without modifying (default false)", "default": False},
+                "phase": {"type": "string", "description": "Run a single phase instead of all", "enum": ["dedup", "normalize", "resolve", "compress", "purge"]},
+            },
+        },
+    },
+    {
         "name": "kontext_decay",
         "description": "Run score decay on stale memory entries. Reduces grade of entries not accessed recently. Auto-exports affected files.",
         "inputSchema": {
@@ -535,6 +546,38 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                 return _mcp_result(req_id, "\n".join(lines))
             except Exception as e:
                 return _mcp_error(req_id, f"kontext_recent failed: {e}")
+
+        elif tool_name == "kontext_dream":
+            try:
+                db = _get_db()
+                from dream import dream as run_dream
+
+                dry_run = args.get("dry_run", False)
+                phase = args.get("phase")
+                results = run_dream(db, dry_run=dry_run, phase=phase)
+
+                # Re-export if changes were made
+                if not dry_run:
+                    total = sum(
+                        v for stats in results.values() for k, v in stats.items()
+                        if k in ("merged", "anchored", "auto_resolved", "compressed", "purged") and v > 0
+                    )
+                    if total > 0:
+                        from export import export_all, export_memory_index
+                        mem_dir = find_memory_dir()
+                        if mem_dir:
+                            export_all(db, mem_dir)
+                            export_memory_index(db, mem_dir)
+
+                mode = "DRY RUN" if dry_run else "APPLIED"
+                lines = [f"**Dream consolidation ({mode}):**"]
+                for phase_name, stats in results.items():
+                    parts = [f"{k}={v}" for k, v in stats.items()]
+                    lines.append(f"  {phase_name}: {', '.join(parts)}")
+                _logger.info(f"DREAM: {mode} results={results}")
+                return _mcp_result(req_id, "\n".join(lines))
+            except Exception as e:
+                return _mcp_error(req_id, f"kontext_dream failed: {e}")
 
         elif tool_name == "kontext_decay":
             try:

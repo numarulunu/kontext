@@ -23,6 +23,43 @@ logging.basicConfig(
 log = logging.getLogger("kontext.sync")
 
 
+_DREAM_STAMP = Path(__file__).parent / "_dream_last"
+
+
+def _maybe_dream(db) -> int:
+    """Run dream consolidation if >24h since last run. Returns action count."""
+    now = datetime.now()
+    if _DREAM_STAMP.exists():
+        try:
+            last = datetime.fromisoformat(_DREAM_STAMP.read_text(encoding="utf-8").strip())
+            if (now - last).total_seconds() < 86400:
+                return 0
+        except (ValueError, OSError):
+            pass
+
+    try:
+        from dream import dream as run_dream
+        results = run_dream(db)
+        total = sum(
+            v for stats in results.values() for k, v in stats.items()
+            if k in ("merged", "anchored", "auto_resolved", "compressed", "purged")
+        )
+        if total > 0:
+            log.info(f"DREAM: {total} actions — {results}")
+            # Re-export after changes
+            from export import export_all, export_memory_index
+            from mcp_server import find_memory_dir
+            mem_dir = find_memory_dir()
+            if mem_dir:
+                export_all(db, mem_dir)
+                export_memory_index(db, mem_dir)
+        _DREAM_STAMP.write_text(now.isoformat(), encoding="utf-8")
+        return total
+    except Exception as e:
+        log.warning(f"DREAM: failed — {e}")
+        return 0
+
+
 def _run_decay(db) -> int:
     """Run score decay. Returns number of entries affected."""
     before = db.conn.execute("SELECT COUNT(*) FROM entries WHERE grade > 1").fetchone()[0]
@@ -92,8 +129,11 @@ def sync(memory_dir: Path = None, dry_run: bool = False) -> dict:
     # Run score decay on every sync (once per session start)
     decayed = _run_decay(db)
 
+    # Run dream consolidation at most once per day
+    dreamed = _maybe_dream(db)
+
     db.close()
-    return {"synced": synced, "skipped": skipped, "files_checked": files_checked, "decayed": decayed}
+    return {"synced": synced, "skipped": skipped, "files_checked": files_checked, "decayed": decayed, "dreamed": dreamed}
 
 
 if __name__ == "__main__":
