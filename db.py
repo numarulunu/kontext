@@ -228,6 +228,7 @@ class KontextDB:
             parts.append(f"files_touched: {files_touched}")
         parts.append("---\n")
         try:
+            target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("\n".join(parts), encoding="utf-8")
         except Exception:
             pass  # Non-critical — DB is the source of truth

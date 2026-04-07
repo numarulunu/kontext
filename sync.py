@@ -97,14 +97,24 @@ def sync(memory_dir: Path = None, dry_run: bool = False) -> dict:
         entries = parse_memory_file(md_file)
 
         for entry in entries:
-            # Exact-match dedup against (file, fact). Previously used a 50-char
-            # LIKE prefix which produced false negatives and let duplicates
-            # accumulate on every sync.
+            # Dedup: exact match first (fast), then fuzzy 85% similarity
+            # check against same-file entries (catches near-duplicates).
             existing = db.conn.execute(
                 "SELECT 1 FROM entries WHERE file = ? AND fact = ? LIMIT 1",
                 (md_file.name, entry["fact"]),
             ).fetchone()
-            already_in_db = existing is not None
+            if not existing:
+                # Fuzzy check — only load same-file entries to keep it fast
+                same_file = db.conn.execute(
+                    "SELECT fact FROM entries WHERE file = ?",
+                    (md_file.name,),
+                ).fetchall()
+                from difflib import SequenceMatcher
+                existing = any(
+                    SequenceMatcher(None, entry["fact"].lower(), row[0].lower()).ratio() >= 0.85
+                    for row in same_file
+                )
+            already_in_db = bool(existing)
 
             if not already_in_db:
                 if dry_run:

@@ -41,7 +41,7 @@ KONTEXT_POSTCOMPACT = {
                 "db.add_entry(file='FILENAME.md', fact='THE FACT', source='[Claude YYYY-MM]', grade=7, tier='active')\"\n\n"
                 "Use Bash tool directly. Do NOT use MCP tools — they may not be available in this context. Work silently."
             ),
-            "model": "claude-haiku-4-5-20251001",
+            "model": HAIKU_MODEL,
             "timeout": 45,
             "statusMessage": "Saving context before compression...",
         }
@@ -88,6 +88,9 @@ KONTEXT_SESSION_SAVE = {
 }
 
 # UserPromptSubmit hook 3: Memory save (every 60s)
+# Model used by PostCompact agent hook — update when Anthropic deprecates
+HAIKU_MODEL = "claude-haiku-4-5-20251001"
+
 KONTEXT_MEMORY_SAVE = {
     "hooks": [
         {
@@ -174,7 +177,7 @@ def install():
     if not userprompt_installed:
         to_install.append(("UserPromptSubmit", KONTEXT_SESSION_DETECT, "Session detector"))
         to_install.append(("UserPromptSubmit", KONTEXT_SESSION_SAVE, "Session save (60s)"))
-        to_install.append(("UserPromptSubmit", KONTEXT_MEMORY_SAVE, "Memory save (180s)"))
+        to_install.append(("UserPromptSubmit", KONTEXT_MEMORY_SAVE, "Memory save (60s)"))
     if not postcompact_installed:
         to_install.append(("PostCompact", KONTEXT_POSTCOMPACT, "Post-compression save (Bash, no MCP)"))
 

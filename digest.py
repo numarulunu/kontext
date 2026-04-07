@@ -232,15 +232,22 @@ def extract_candidates(filepath: Path) -> list[dict]:
 
 
 def deduplicate_candidates(candidates: list[dict], db: KontextDB) -> list[dict]:
-    """Remove candidates that already exist in the database."""
+    """Remove candidates that already exist in the database (85% similarity threshold)."""
+    from difflib import SequenceMatcher
+
+    # Load all DB facts once for efficient comparison
+    all_entries = db.conn.execute("SELECT fact FROM entries").fetchall()
+    db_facts = [row[0].lower() for row in all_entries]
+
     fresh = []
     for c in candidates:
-        # Check if a similar fact already exists (first 50 chars match)
-        prefix = c["text"][:50]
-        existing = db.search_entries(prefix, limit=3)
-        if any(e["fact"][:50] == prefix for e in existing):
-            continue
-        fresh.append(c)
+        text_lower = c["text"].lower()
+        is_dup = any(
+            SequenceMatcher(None, text_lower, f).ratio() >= 0.85
+            for f in db_facts
+        )
+        if not is_dup:
+            fresh.append(c)
     return fresh
 
 
@@ -331,7 +338,8 @@ def auto_import(candidates: list[dict], db: KontextDB, min_grade: int = 7) -> di
     """Auto-import high-confidence candidates into the database.
 
     Only imports candidates with grade >= min_grade.
-    Returns {imported, skipped, total}.
+    Runs conflict detection after import to catch contradictions.
+    Returns {imported, skipped, conflicts_found, total}.
     """
     imported = 0
     skipped = 0
@@ -352,7 +360,15 @@ def auto_import(candidates: list[dict], db: KontextDB, min_grade: int = 7) -> di
         imported += 1
         _log.info(f"IMPORT: [{target_file}] g{c['grade']} {c['text'][:60]}")
 
-    return {"imported": imported, "skipped": skipped, "total": len(candidates)}
+    # Run conflict detection after import to catch contradictions
+    conflicts_found = 0
+    if imported > 0:
+        new_conflicts = db.detect_conflicts()
+        conflicts_found = len(new_conflicts)
+        if conflicts_found > 0:
+            _log.warning(f"IMPORT: {conflicts_found} new conflict(s) detected after import")
+
+    return {"imported": imported, "skipped": skipped, "conflicts_found": conflicts_found, "total": len(candidates)}
 
 
 # ---------------------------------------------------------------------------
