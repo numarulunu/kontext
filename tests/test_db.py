@@ -161,8 +161,9 @@ def test_tier_transitions_after_decay(db):
 
 
 def test_detect_conflict(db):
-    db.add_entry(file="identity.md", fact="Active students: 27", source="[Claude 2026-03]", grade=9, tier="active")
-    db.add_entry(file="identity.md", fact="Active students: 24", source="[Claude 2026-04]", grade=9, tier="active")
+    # Undated active entries with numeric drift → genuine conflict
+    db.add_entry(file="identity.md", fact="Active students currently: 27", source="manual", grade=9, tier="active")
+    db.add_entry(file="identity.md", fact="Active students currently: 24", source="manual", grade=9, tier="active")
     conflicts = db.detect_conflicts(file="identity.md")
     assert len(conflicts) >= 1
     assert "students" in conflicts[0]["entry_a"].lower() or "students" in conflicts[0]["entry_b"].lower()

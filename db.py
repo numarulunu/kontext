@@ -190,6 +190,23 @@ class KontextDB:
             "INSERT INTO sessions (project, status, next_step, key_decisions) VALUES (?, ?, ?, ?)",
             (project, status, next_step, key_decisions)
         )
+        self._export_last_session(project, status, next_step, key_decisions)
+
+    def _export_last_session(self, project: str, status: str, next_step: str, key_decisions: str):
+        """Write _last_session.md so SessionStart shell hooks can read it without MCP."""
+        target = Path.home() / ".claude" / "_last_session.md"
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        content = (
+            f"---\ndate: {today}\n"
+            f"project: {project}\n"
+            f"status: {status}\n"
+            f"next: {next_step}\n"
+            f"key_decisions: {key_decisions}\n---\n"
+        )
+        try:
+            target.write_text(content, encoding="utf-8")
+        except Exception:
+            pass  # Non-critical — DB is the source of truth
 
     def get_latest_session(self) -> dict | None:
         row = self.conn.execute("SELECT * FROM sessions ORDER BY id DESC LIMIT 1").fetchone()
@@ -311,13 +328,12 @@ class KontextDB:
         ).fetchall()]
 
     def detect_conflicts(self, file: str = None) -> list[dict]:
-        """Find potential contradictions.
+        """Find potential contradictions among active-tier entries.
 
-        TEMPORAL-AWARE: facts evolve over time. Two entries that share keywords
-        are NOT a conflict if either is dated (source tag like '[Claude 2026-04]')
-        or if one has been demoted to 'historical' tier — those represent
-        evolution, not contradiction. Only flag pairs where BOTH entries are
-        active AND undated AND share enough value-bearing words.
+        TEMPORAL-AWARE: if BOTH entries in a pair carry dated sources
+        (e.g. '[Claude 2026-03]' and '[Claude 2026-04]'), they represent
+        timeline evolution, not contradiction — skip the pair.
+        Historical-tier entries are excluded by the query itself.
         """
         import re
 
@@ -364,29 +380,31 @@ class KontextDB:
 
         for file_name, file_entries in by_file.items():
             for i, e1 in enumerate(file_entries):
-                if is_dated(e1[3], e1[2]):
-                    continue  # dated → part of a timeline, not a conflict
                 words_1 = value_words(e1[2])
                 if len(words_1) < 2:
                     continue
+                e1_dated = is_dated(e1[3], e1[2])
                 for e2 in file_entries[i + 1:]:
-                    if is_dated(e2[3], e2[2]):
-                        continue
                     if e1[2] == e2[2]:
+                        continue
+                    # Both dated → timeline evolution, not a conflict
+                    if e1_dated and is_dated(e2[3], e2[2]):
                         continue
                     pair_key = (min(e1[0], e2[0]), max(e1[0], e2[0]))
                     if pair_key in seen_pairs:
                         continue
                     words_2 = value_words(e2[2])
                     shared = words_1 & words_2
-                    # Strongest signal: ≥3 shared value words AND a numeric token
-                    # in either entry that differs from the other (quantitative drift)
+                    # Conflict signal: shared value words AND a numeric token
+                    # in either entry that differs from the other (quantitative drift).
+                    # ≥2 shared words with numeric drift is enough (e.g. "Active students: 27"
+                    # vs "Active students: 24"). ≥3 shared words without drift also qualifies.
                     nums_1 = {w for w in words_1 if any(c.isdigit() for c in w)}
                     nums_2 = {w for w in words_2 if any(c.isdigit() for c in w)}
                     numeric_drift = bool(
                         (nums_1 or nums_2) and (nums_1 ^ nums_2)
                     )
-                    if len(shared) >= 3 and numeric_drift:
+                    if (len(shared) >= 2 and numeric_drift) or len(shared) >= 3:
                         seen_pairs.add(pair_key)
                         self.add_conflict(file=file_name, entry_a=e1[2], entry_b=e2[2])
                         conflicts.append({

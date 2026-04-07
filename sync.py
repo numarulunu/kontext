@@ -23,6 +23,17 @@ logging.basicConfig(
 log = logging.getLogger("kontext.sync")
 
 
+def _run_decay(db) -> int:
+    """Run score decay. Returns number of entries affected."""
+    before = db.conn.execute("SELECT COUNT(*) FROM entries WHERE grade > 1").fetchone()[0]
+    db.decay_scores()  # defaults: 60 days, -0.5 grade
+    after = db.conn.execute("SELECT COUNT(*) FROM entries WHERE grade > 1").fetchone()[0]
+    decayed = before - after
+    if decayed > 0:
+        log.info(f"DECAY: {decayed} entries dropped to grade 1 (cold)")
+    return decayed
+
+
 def sync(memory_dir: Path = None, dry_run: bool = False) -> dict:
     """Compare flat files with DB, import any entries that exist in files but not in DB.
     Returns {synced: int, skipped: int, files_checked: int}."""
@@ -78,8 +89,11 @@ def sync(memory_dir: Path = None, dry_run: bool = False) -> dict:
     elif synced == 0:
         log.info(f"SYNC: all {skipped} entries already in DB, nothing to import")
 
+    # Run score decay on every sync (once per session start)
+    decayed = _run_decay(db)
+
     db.close()
-    return {"synced": synced, "skipped": skipped, "files_checked": files_checked}
+    return {"synced": synced, "skipped": skipped, "files_checked": files_checked, "decayed": decayed}
 
 
 if __name__ == "__main__":
