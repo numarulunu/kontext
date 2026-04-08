@@ -25,11 +25,17 @@ SETTINGS_PATH = CLAUDE_DIR / "settings.json"
 # --- Hook definitions ---
 
 # UserPromptSubmit hook 1: New session detector (>5 min gap = new session)
+# All three hooks below check $KONTEXT_SKIP_HOOKS first — set that env var to
+# any non-empty value before spawning a headless `claude --print` subprocess
+# (batch distillation, automation, CI) to bypass the hook entirely. This
+# prevents N parallel subprocesses from all racing each other on kontext.db
+# locks and MCP server cold-boot.
 KONTEXT_SESSION_DETECT = {
     "hooks": [
         {
             "type": "command",
             "command": (
+                'if [ -n "${KONTEXT_SKIP_HOOKS:-}" ]; then echo \'{"suppressOutput":true}\'; exit 0; fi; '
                 'SEEN="$HOME/.claude/.kontext_seen"; NOW=$(date +%s); LAST=0; '
                 'test -f "$SEEN" && LAST=$(cat "$SEEN"); DIFF=$((NOW - LAST)); '
                 'if [ "$DIFF" -gt 300 ]; then '
@@ -50,6 +56,7 @@ KONTEXT_SESSION_SAVE = {
         {
             "type": "command",
             "command": (
+                'if [ -n "${KONTEXT_SKIP_HOOKS:-}" ]; then echo \'{"suppressOutput":true}\'; exit 0; fi; '
                 'THROTTLE="$HOME/.claude/.kontext_session_last"; NOW=$(date +%s); LAST=0; '
                 'test -f "$THROTTLE" && LAST=$(cat "$THROTTLE"); DIFF=$((NOW - LAST)); '
                 'if [ "$DIFF" -lt 60 ]; then echo \'{"suppressOutput":true}\'; '
@@ -72,6 +79,7 @@ KONTEXT_MEMORY_SAVE = {
         {
             "type": "command",
             "command": (
+                'if [ -n "${KONTEXT_SKIP_HOOKS:-}" ]; then echo \'{"suppressOutput":true}\'; exit 0; fi; '
                 'THROTTLE="$HOME/.claude/.kontext_memory_last"; NOW=$(date +%s); LAST=0; '
                 'test -f "$THROTTLE" && LAST=$(cat "$THROTTLE"); DIFF=$((NOW - LAST)); '
                 'if [ "$DIFF" -lt 60 ]; then echo \'{"suppressOutput":true}\'; '
