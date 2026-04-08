@@ -24,18 +24,31 @@ SETTINGS_PATH = CLAUDE_DIR / "settings.json"
 
 # --- Hook definitions ---
 
+# Shared skip gate prepended to every Kontext UserPromptSubmit hook.
+# Two escape hatches, either one triggers skip:
+#   1. Manual env var: set KONTEXT_SKIP_HOOKS=1 before spawning claude.
+#      Use this when auto-detection can't see the parent (e.g. on systems
+#      without `ps`) or for testing.
+#   2. Auto-detect: inspect the parent process's command line via `ps`.
+#      If Claude Code was launched with `--print` / `-p` (headless one-shot
+#      batch mode), every hook call in that subprocess skips automatically.
+#      This is what makes normal scripts Just Work: Kontext stays live in
+#      interactive sessions, batch distillers (Kontext digest, Skool
+#      cleaner, anything else) bypass the hooks with zero per-script setup.
+_SKIP_GATE = (
+    'if [ -n "${KONTEXT_SKIP_HOOKS:-}" ]; then '
+    'echo \'{"suppressOutput":true}\'; exit 0; fi; '
+    'if ps -o command= -p "$PPID" 2>/dev/null | grep -qE -- "(--print|[[:space:]]-p[[:space:]])"; then '
+    'echo \'{"suppressOutput":true}\'; exit 0; fi; '
+)
+
 # UserPromptSubmit hook 1: New session detector (>5 min gap = new session)
-# All three hooks below check $KONTEXT_SKIP_HOOKS first — set that env var to
-# any non-empty value before spawning a headless `claude --print` subprocess
-# (batch distillation, automation, CI) to bypass the hook entirely. This
-# prevents N parallel subprocesses from all racing each other on kontext.db
-# locks and MCP server cold-boot.
 KONTEXT_SESSION_DETECT = {
     "hooks": [
         {
             "type": "command",
             "command": (
-                'if [ -n "${KONTEXT_SKIP_HOOKS:-}" ]; then echo \'{"suppressOutput":true}\'; exit 0; fi; '
+                _SKIP_GATE +
                 'SEEN="$HOME/.claude/.kontext_seen"; NOW=$(date +%s); LAST=0; '
                 'test -f "$SEEN" && LAST=$(cat "$SEEN"); DIFF=$((NOW - LAST)); '
                 'if [ "$DIFF" -gt 300 ]; then '
@@ -56,7 +69,7 @@ KONTEXT_SESSION_SAVE = {
         {
             "type": "command",
             "command": (
-                'if [ -n "${KONTEXT_SKIP_HOOKS:-}" ]; then echo \'{"suppressOutput":true}\'; exit 0; fi; '
+                _SKIP_GATE +
                 'THROTTLE="$HOME/.claude/.kontext_session_last"; NOW=$(date +%s); LAST=0; '
                 'test -f "$THROTTLE" && LAST=$(cat "$THROTTLE"); DIFF=$((NOW - LAST)); '
                 'if [ "$DIFF" -lt 60 ]; then echo \'{"suppressOutput":true}\'; '
@@ -79,7 +92,7 @@ KONTEXT_MEMORY_SAVE = {
         {
             "type": "command",
             "command": (
-                'if [ -n "${KONTEXT_SKIP_HOOKS:-}" ]; then echo \'{"suppressOutput":true}\'; exit 0; fi; '
+                _SKIP_GATE +
                 'THROTTLE="$HOME/.claude/.kontext_memory_last"; NOW=$(date +%s); LAST=0; '
                 'test -f "$THROTTLE" && LAST=$(cat "$THROTTLE"); DIFF=$((NOW - LAST)); '
                 'if [ "$DIFF" -lt 60 ]; then echo \'{"suppressOutput":true}\'; '
