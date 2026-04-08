@@ -94,26 +94,33 @@ def distill_with_haiku(text: str) -> str | None:
     global _distill_unavailable
     if _distill_unavailable:
         return None
-    import subprocess, shutil, os, tempfile
+    import subprocess, shutil, os, tempfile, json as _json
+    from pathlib import Path as _Path
     cli = shutil.which("claude")
     if not cli:
         _log.warning("DISTILL: `claude` CLI not on PATH — distillation disabled for this run")
         _distill_unavailable = True
         return None
-    # Build a minimal environment for the subprocess:
-    # - KONTEXT_SKIP_HOOKS=1 bypasses the Kontext UserPromptSubmit hooks
-    #   entirely, so N parallel distill workers don't all race on kontext.db
-    #   locks or the Kontext MCP server boot sequence.
-    # - Spawn cwd is a scratch temp dir with no .claude-plugin / MCP config,
-    #   so the CLI has nothing to auto-load beyond the user's global config.
-    # Both are required — the hooks alone will skip, but MCP servers would
-    # still cold-boot per subprocess without the cwd isolation.
+    # Batch-mode hardening. The env var alone is insufficient: even if the
+    # hooks skip, `claude --print` still cold-boots every MCP server in the
+    # user-scope settings.json (Serena LSP init alone is 10-30s). With
+    # parallel workers that's a certain deadlock. The fix is an empty
+    # --mcp-config file plus --strict-mcp-config, which tells Claude Code
+    # to load ZERO MCP servers for this subprocess.
+    empty_mcp = _Path(tempfile.gettempdir()) / "kontext-empty-mcp.json"
+    if not empty_mcp.exists():
+        empty_mcp.write_text(_json.dumps({"mcpServers": {}}), encoding="utf-8")
     env = os.environ.copy()
-    env["KONTEXT_SKIP_HOOKS"] = "1"
+    env["KONTEXT_SKIP_HOOKS"] = "1"  # belt + suspenders with --strict-mcp-config
     scratch_cwd = tempfile.gettempdir()
     try:
         proc = subprocess.run(
-            [cli, "-p", _DISTILL_PROMPT.format(text=text), "--model", HAIKU_MODEL],
+            [
+                cli, "-p", _DISTILL_PROMPT.format(text=text),
+                "--model", HAIKU_MODEL,
+                "--strict-mcp-config",
+                "--mcp-config", str(empty_mcp),
+            ],
             capture_output=True, text=True, timeout=45,
             encoding="utf-8", errors="replace",
             env=env, cwd=scratch_cwd,
