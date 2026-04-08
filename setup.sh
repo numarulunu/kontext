@@ -131,7 +131,7 @@ echo "  Installing cross-session memory sync hook..."
 
 # Auto-detect Python
 PYTHON=""
-for cmd in python3 python /c/Python314/python /c/Python312/python; do
+for cmd in python3 python py /c/Python314/python /c/Python312/python; do
     if command -v "$cmd" &>/dev/null; then
         PYTHON="$cmd"
         break
@@ -147,7 +147,9 @@ fi
 
 # --- Install semantic search ---
 echo ""
-if $PYTHON -c "import sentence_transformers" 2>/dev/null; then
+if [ -z "$PYTHON" ]; then
+    echo "  Skipping semantic search install (Python not found)."
+elif $PYTHON -c "import sentence_transformers" 2>/dev/null; then
     echo "  Semantic search already installed"
 else
     echo "  Semantic search requires sentence-transformers (~500MB download)."

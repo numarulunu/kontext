@@ -11,16 +11,19 @@ Usage:
 
 import sys
 import logging
+import logging.handlers
 from pathlib import Path
 from datetime import datetime
 
 _LOG_FILE = Path(__file__).parent / "_kontext.log"
-logging.basicConfig(
-    filename=str(_LOG_FILE),
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-)
 log = logging.getLogger("kontext.sync")
+if not log.handlers:
+    log.setLevel(logging.INFO)
+    _h = logging.handlers.RotatingFileHandler(
+        str(_LOG_FILE), maxBytes=1_000_000, backupCount=2, encoding="utf-8"
+    )
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    log.addHandler(_h)
 
 
 _DREAM_STAMP = Path(__file__).parent / "_dream_last"
@@ -46,13 +49,16 @@ def _maybe_dream(db) -> int:
         )
         if total > 0:
             log.info(f"DREAM: {total} actions — {results}")
-            # Re-export after changes
+            # Re-export after changes. If exports fail, do NOT stamp — next run retries.
             from export import export_all, export_memory_index
             from mcp_server import find_memory_dir
             mem_dir = find_memory_dir()
             if mem_dir:
                 export_all(db, mem_dir)
                 export_memory_index(db, mem_dir)
+        # Stamp only after dream + exports both succeed. Previously the stamp
+        # was written before export_memory_index, so a half-exported dream run
+        # could leave the stamp advanced and prevent a retry next session.
         _DREAM_STAMP.write_text(now.isoformat(), encoding="utf-8")
         return total
     except Exception as e:
@@ -143,11 +149,13 @@ def sync(memory_dir: Path = None, dry_run: bool = False, db=None) -> dict:
     elif synced == 0:
         log.info(f"SYNC: all {skipped} entries already in DB, nothing to import")
 
-    # Run score decay on every sync (once per session start)
-    decayed = _run_decay(db)
-
-    # Run dream consolidation at most once per day
-    dreamed = _maybe_dream(db)
+    # Decay and dream are writes. Skip on dry-run so `--dry-run` is truly read-only.
+    if dry_run:
+        decayed = 0
+        dreamed = 0
+    else:
+        decayed = _run_decay(db)
+        dreamed = _maybe_dream(db)
 
     if owns_db:
         db.close()

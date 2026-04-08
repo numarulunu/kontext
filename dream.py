@@ -34,12 +34,15 @@ __version__ = "1.0"
 LOG = Path(__file__).parent / "_dream.log"
 LOCKFILE = Path(__file__).parent / "_dream.lock"
 
-logging.basicConfig(
-    filename=str(LOG),
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-)
+import logging.handlers
 _log = logging.getLogger("kontext.dream")
+if not _log.handlers:
+    _log.setLevel(logging.INFO)
+    _h = logging.handlers.RotatingFileHandler(
+        str(LOG), maxBytes=1_000_000, backupCount=2, encoding="utf-8"
+    )
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    _log.addHandler(_h)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -51,12 +54,15 @@ def similarity(a: str, b: str) -> float:
 
 
 def days_since(iso_ts: str) -> int:
+    # Null timestamp = treat as just-accessed. Returning a huge number here was
+    # causing phase_purge to delete entries that had never been touched since
+    # insertion (e.g. bulk-imported rows with no last_accessed).
     if not iso_ts:
-        return 999
+        return 0
     try:
         dt = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
     except ValueError:
-        return 999
+        return 0
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - dt).days
@@ -158,11 +164,12 @@ def phase_dedup(db: KontextDB, dry_run: bool = False) -> dict:
                             merged_ids.add(drop["id"])
                             stats["merged"] += 1
 
-        # Cross-bucket for short entries (< 30 chars can match across prefixes)
+        # Cross-bucket for short entries (< 30 chars can match across prefixes).
+        # Rebuild *after* the within-bucket loop so merged entries are already excluded.
         short_entries = [e for e in entries if len(e["fact"]) < 30 and e["id"] not in merged_ids]
         for i, e1 in enumerate(short_entries):
-            if e1["id"] in merged_ids:
-                continue
+            # NOTE: no `if e1["id"] in merged_ids` guard — short_entries was just
+            # rebuilt with the up-to-date merged_ids, so e1 cannot already be merged.
             for e2 in short_entries[i + 1:]:
                 if e2["id"] in merged_ids:
                     continue
@@ -259,12 +266,11 @@ def phase_resolve(db: KontextDB, dry_run: bool = False) -> dict:
             stats["skipped"] += 1
             continue
 
-        # Find the actual entries by matching fact text
-        entry_a_rows = db.search_entries(c["entry_a"][:50], limit=5)
-        entry_b_rows = db.search_entries(c["entry_b"][:50], limit=5)
-
-        entry_a = next((e for e in entry_a_rows if e["fact"] == c["entry_a"]), None)
-        entry_b = next((e for e in entry_b_rows if e["fact"] == c["entry_b"]), None)
+        # Exact-match lookup by (file, fact). Previously this used a LIKE-based
+        # search_entries() with the first 50 chars as the pattern — unsafe for facts
+        # containing %/_ and wasteful (O(n) post-filter in Python).
+        entry_a = db.get_entry_by_fact(c["file"], c["entry_a"])
+        entry_b = db.get_entry_by_fact(c["file"], c["entry_b"])
 
         if not entry_a or not entry_b:
             # One side was already deleted — auto-resolve
@@ -328,7 +334,13 @@ def phase_compress(db: KontextDB, dry_run: bool = False) -> dict:
     cold_entries = db.get_entries(tier="cold")
     stats["candidates"] = len(cold_entries)
 
-    paren_re = re.compile(r"\s*\([^)]{20,}\)")  # Remove long parentheticals
+    # Only strip parentheticals that look like boilerplate (source tags, "see also",
+    # "formerly", "as of"). Previously this stripped *any* parenthetical >=20 chars,
+    # which destroyed meaningful numeric/historical context.
+    paren_re = re.compile(
+        r"\s*\((?:see also|formerly|as of|previously|source:|ref:)[^)]{0,200}\)",
+        re.IGNORECASE,
+    )
 
     for e in cold_entries:
         fact = e["fact"]
@@ -358,7 +370,13 @@ def phase_compress(db: KontextDB, dry_run: bool = False) -> dict:
 def phase_purge(db: KontextDB, dry_run: bool = False) -> dict:
     """Delete entries with grade <= 1 that haven't been accessed in 120+ days."""
     stats = {"candidates": 0, "purged": 0}
-    entries = db.get_entries()
+    # Push grade + last_accessed filters into SQL — full table fetch was wasteful
+    # at scale (most entries are grade > 1 and never qualify).
+    rows = db.conn.execute("""
+        SELECT id, grade, fact, last_accessed FROM entries
+        WHERE grade <= 1 AND last_accessed < datetime('now', '-120 days')
+    """).fetchall()
+    entries = [dict(r) for r in rows]
 
     for e in entries:
         if e["grade"] <= 1 and days_since(e.get("last_accessed", "")) >= 120:
@@ -385,7 +403,12 @@ PHASES = {
 
 
 def dream(db: KontextDB, dry_run: bool = False, phase: str = None) -> dict:
-    """Run the full dream cycle (or a single phase)."""
+    """Run the full dream cycle (or a single phase).
+
+    Wraps the full phase loop in a single transaction so a crash mid-phase
+    rolls back everything the earlier phases committed. Dry-run mode stays
+    outside any transaction since no writes happen.
+    """
     results = {}
 
     if phase:
@@ -393,11 +416,20 @@ def dream(db: KontextDB, dry_run: bool = False, phase: str = None) -> dict:
             print(f"ERROR: Unknown phase '{phase}'. Options: {', '.join(PHASES)}")
             return results
         _log.info(f"DREAM START phase={phase} dry_run={dry_run}")
-        results[phase] = PHASES[phase](db, dry_run)
+        if dry_run:
+            results[phase] = PHASES[phase](db, dry_run)
+        else:
+            with db.transaction():
+                results[phase] = PHASES[phase](db, dry_run)
     else:
         _log.info(f"DREAM START full dry_run={dry_run}")
-        for name, fn in PHASES.items():
-            results[name] = fn(db, dry_run)
+        if dry_run:
+            for name, fn in PHASES.items():
+                results[name] = fn(db, dry_run)
+        else:
+            with db.transaction():
+                for name, fn in PHASES.items():
+                    results[name] = fn(db, dry_run)
 
     _log.info(f"DREAM END results={results}")
     return results

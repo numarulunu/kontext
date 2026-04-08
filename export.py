@@ -59,9 +59,17 @@ def export_file(db: KontextDB, filename: str) -> str:
         "",
     ]
 
-    active = db.get_entries(file=filename, tier="active")
-    historical = db.get_entries(file=filename, tier="historical")
-    cold = db.get_entries(file=filename, tier="cold")
+    # One query, split in Python — avoids 3 separate SQL round-trips per file
+    # (which compounded in export_all to 3×N queries across all memory files).
+    all_rows = db.get_entries(file=filename)
+    active, historical, cold = [], [], []
+    for e in all_rows:
+        if e["tier"] == "active":
+            active.append(e)
+        elif e["tier"] == "historical":
+            historical.append(e)
+        elif e["tier"] == "cold":
+            cold.append(e)
 
     if active:
         lines.append("## Active (Grade 8-10)")

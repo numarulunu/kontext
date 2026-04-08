@@ -27,6 +27,81 @@ def test_create_tables(db):
     assert "sessions" in tables
 
 
+class TestSchemaVersion:
+    def test_fresh_db_at_latest_version(self, db):
+        from db import LATEST_SCHEMA_VERSION
+        v = db.conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        assert v == LATEST_SCHEMA_VERSION
+
+    def test_migration_idempotent(self, db):
+        from db import LATEST_SCHEMA_VERSION
+        # Re-run migrations explicitly — should be a no-op
+        db._migrate()
+        db._migrate()
+        v = db.conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        assert v == LATEST_SCHEMA_VERSION
+        # Existing tables and indexes still intact
+        idx = db.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_entries_unique'"
+        ).fetchone()
+        assert idx is not None
+
+    def test_migration_runs_only_pending(self, db):
+        from db import LATEST_SCHEMA_VERSION, MIGRATIONS
+        # Force version back to 0; migrations should run forward to LATEST
+        db.conn.execute("UPDATE schema_version SET version = 0")
+        db.conn.commit()
+        db._migrate()
+        v = db.conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        assert v == LATEST_SCHEMA_VERSION
+        assert LATEST_SCHEMA_VERSION == max(m[0] for m in MIGRATIONS)
+
+    def test_fts_substring_match(self, db):
+        db.add_entry(file="x.md", fact="Active students count is twenty four", grade=8)
+        results = db.search_entries("twenty")
+        assert any("twenty" in r["fact"] for r in results)
+        # Mid-word trigram match (substring inside a word)
+        results = db.search_entries("tuden")
+        assert any("students" in r["fact"] for r in results)
+
+    def test_fts_respects_filters(self, db):
+        db.add_entry(file="a.md", fact="pricing model alpha", grade=9, tier="active")
+        db.add_entry(file="b.md", fact="pricing model beta", grade=4, tier="cold")
+        r = db.search_entries("pricing", file="a.md")
+        assert len(r) == 1 and r[0]["file"] == "a.md"
+        r = db.search_entries("pricing", min_grade=5)
+        assert all(e["grade"] >= 5 for e in r) and len(r) == 1
+
+    def test_fts_sync_on_update_and_delete(self, db):
+        eid = db.add_entry(file="x.md", fact="original phrase here", grade=7)
+        assert db.search_entries("original")
+        db.update_entry(eid, fact="rewritten phrase here")
+        assert not db.search_entries("original")
+        assert db.search_entries("rewritten")
+        db.delete_entry(eid)
+        assert not db.search_entries("rewritten")
+
+    def test_fts_special_chars_safe(self, db):
+        db.add_entry(file="x.md", fact="cost is 50% of revenue", grade=7)
+        # None of these should raise
+        for q in ['50%', '"quoted"', 'a*b', 'foo:bar', '(paren)', 'a-b', '_underscore_']:
+            db.search_entries(q)
+
+    def test_legacy_db_without_schema_version_upgrades(self, tmp_path):
+        # Simulate a pre-migration-framework DB by creating one then dropping
+        # the schema_version table — re-opening should rebuild and set latest.
+        from db import LATEST_SCHEMA_VERSION
+        path = tmp_path / "legacy.db"
+        d = KontextDB(str(path))
+        d.conn.execute("DROP TABLE schema_version")
+        d.conn.commit()
+        d.close()
+        d2 = KontextDB(str(path))
+        v = d2.conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        assert v == LATEST_SCHEMA_VERSION
+        d2.close()
+
+
 def test_add_entry(db):
     entry_id = db.add_entry(
         file="user_identity.md",

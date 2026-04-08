@@ -14,8 +14,11 @@ Rules:
 Python 3.10+, stdlib only.
 """
 
+import logging
 from datetime import datetime
 from typing import Optional
+
+_log = logging.getLogger("kontext.chunker")
 
 
 # Rough token estimate: 1 token ~ 4 chars (conservative for English text)
@@ -85,8 +88,11 @@ def _split_oversized_conversation(convo: list[dict], max_chars: int) -> list[lis
     If a single conversation exceeds max_chars, split it at natural
     paragraph breaks within messages. Returns a list of sub-groups.
     """
-    full_text = _conversation_text(convo)
-    if len(full_text) <= max_chars:
+    # Pre-render each message exactly once and reuse the size — previously this
+    # function called _conversation_text on every message in addition to the
+    # full-convo render, an O(n²) string-build pass on huge conversations.
+    msg_sizes = [len(_conversation_text([m])) for m in convo]
+    if sum(msg_sizes) <= max_chars:
         return [convo]
 
     # Split at message boundaries first
@@ -94,10 +100,7 @@ def _split_oversized_conversation(convo: list[dict], max_chars: int) -> list[lis
     current: list[dict] = []
     current_size = 0
 
-    for msg in convo:
-        msg_text = _conversation_text([msg])
-        msg_size = len(msg_text)
-
+    for msg, msg_size in zip(convo, msg_sizes):
         if current_size + msg_size > max_chars and current:
             sub_groups.append(current)
             current = []
@@ -189,6 +192,13 @@ def chunk_messages(
                 current_convos = [last_convo]
                 current_size = last_convo_size
             else:
+                # Last conversation is too big to use as overlap — note it so
+                # downstream chunks won't lose continuity silently. Caller can
+                # see this in the chunker log if they care about coverage.
+                _log.warning(
+                    "chunk overlap dropped: last conversation %d chars > OVERLAP_CHARS %d",
+                    last_convo_size, OVERLAP_CHARS,
+                )
                 current_convos = []
                 current_size = 0
 

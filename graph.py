@@ -163,17 +163,22 @@ def build_graph(db: KontextDB) -> int:
 def prune_graph(db: KontextDB) -> int:
     """Remove relations where either entity is a stopword or too short. Returns count removed."""
     relations = db.get_all_relations()
-    removed = 0
+    bad_ids = []
 
     for rel in relations:
         a = rel["entity_a"]
         b = rel["entity_b"]
         if (len(a) < _MIN_ENTITY_LENGTH or a.lower() in _STOPWORDS or
                 len(b) < _MIN_ENTITY_LENGTH or b.lower() in _STOPWORDS):
-            db.delete_relation(rel["id"])
-            removed += 1
+            bad_ids.append(rel["id"])
 
-    return removed
+    # Single bulk DELETE instead of N individual delete_relation() calls
+    # (each of which previously committed on its own and held the write lock).
+    if bad_ids:
+        placeholders = ",".join("?" * len(bad_ids))
+        db.execute(f"DELETE FROM relations WHERE id IN ({placeholders})", bad_ids)
+
+    return len(bad_ids)
 
 
 def rebuild_graph(db: KontextDB) -> int:

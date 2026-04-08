@@ -47,12 +47,82 @@ MANIFEST = DIGEST_DIR / "_manifest.md"
 PENDING_FLAG = DIGEST_DIR.parent / "_digest-pending"
 CANDIDATES_FILE = Path(__file__).parent / "_digest_candidates.md"
 
-logging.basicConfig(
-    filename=str(LOG),
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-)
+import logging.handlers
 _log = logging.getLogger("kontext.digest")
+if not _log.handlers:
+    _log.setLevel(logging.INFO)
+    _h = logging.handlers.RotatingFileHandler(
+        str(LOG), maxBytes=1_000_000, backupCount=2, encoding="utf-8"
+    )
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    _log.addHandler(_h)
+
+# ---------------------------------------------------------------------------
+# Haiku distillation — turns raw user messages into clean third-person facts
+# ---------------------------------------------------------------------------
+
+HAIKU_MODEL = "claude-haiku-4-5-20251001"
+
+_DISTILL_PROMPT = (
+    "Rewrite the raw chat message below as a single-line third-person memory fact "
+    "for a personal knowledge base owned by a user named Ionut.\n\n"
+    "Rules:\n"
+    "- Output ONE line under 120 characters.\n"
+    "- Third person ('Ionut...', 'User...'), never first person.\n"
+    "- Drop hedges, filler, conversational framing. Keep numbers, names, dates, decisions.\n"
+    "- If the message contains no durable fact (just chatter), output exactly: SKIP\n"
+    "- No quotes, no markdown, no preamble. Just the fact, or SKIP.\n\n"
+    "Message:\n{text}"
+)
+
+_distill_unavailable = False  # set after first failure to avoid retry storms
+
+
+def distill_with_haiku(text: str) -> str | None:
+    """Rewrite a raw user message as a clean third-person fact via Claude Haiku.
+
+    Shells out to the `claude` CLI (one-shot mode) so we reuse Claude Code's
+    existing auth — no API key plumbing required. Returns the distilled fact,
+    or None if:
+      - The `claude` CLI is missing or fails to launch
+      - Haiku judges the message has no durable content (returns 'SKIP')
+      - The subprocess errors / times out
+
+    Caller MUST handle None — do not fall back to the raw message, since the
+    whole point of distillation is to keep raw chatter out of memory.
+    """
+    global _distill_unavailable
+    if _distill_unavailable:
+        return None
+    import subprocess, shutil
+    cli = shutil.which("claude")
+    if not cli:
+        _log.warning("DISTILL: `claude` CLI not on PATH — distillation disabled for this run")
+        _distill_unavailable = True
+        return None
+    try:
+        proc = subprocess.run(
+            [cli, "-p", _DISTILL_PROMPT.format(text=text), "--model", HAIKU_MODEL],
+            capture_output=True, text=True, timeout=45,
+            encoding="utf-8", errors="replace",
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        _log.warning(f"DISTILL: subprocess failed — {e}")
+        return None
+    if proc.returncode != 0:
+        _log.warning(f"DISTILL: claude CLI rc={proc.returncode} stderr={proc.stderr[:200]}")
+        return None
+    out = (proc.stdout or "").strip()
+    if not out or out.upper() == "SKIP":
+        return None
+    # Safety: enforce single line + length cap even if model misbehaves
+    out = out.splitlines()[0].strip().strip('"').strip("'")
+    if out.upper() == "SKIP" or not out:
+        return None
+    if len(out) > 200:
+        out = out[:197] + "..."
+    return out
+
 
 # ---------------------------------------------------------------------------
 # Patterns that signal memory-worthy content in user messages
@@ -349,31 +419,48 @@ def write_candidates_file(candidates: list[dict], output_path: Path):
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def auto_import(candidates: list[dict], db: KontextDB, min_grade: int = 7) -> dict:
+def auto_import(candidates: list[dict], db: KontextDB, min_grade: int = 7,
+                distill: bool = True) -> dict:
     """Auto-import high-confidence candidates into the database.
 
-    Only imports candidates with grade >= min_grade.
-    Runs conflict detection after import to catch contradictions.
-    Returns {imported, skipped, conflicts_found, total}.
+    Each candidate above min_grade is sent through Haiku distillation
+    (`distill_with_haiku`) to convert raw first-person chat into a clean
+    third-person memory fact before storage. Candidates that Haiku marks SKIP
+    or that fail distillation are dropped — we never store raw chatter.
+
+    Set distill=False to skip the LLM pass (used by tests).
+
+    Returns {imported, skipped, distill_dropped, conflicts_found, total}.
     """
     imported = 0
     skipped = 0
+    distill_dropped = 0
 
     for c in candidates:
         if c["grade"] < min_grade:
             skipped += 1
             continue
 
+        if distill:
+            clean = distill_with_haiku(c["text"])
+            if clean is None:
+                distill_dropped += 1
+                _log.info(f"DISTILL_SKIP: g{c['grade']} {c['text'][:60]}")
+                continue
+            fact_text = clean
+        else:
+            fact_text = c["text"]
+
         target_file = route_to_file(c["project"], c["type"])
         db.add_entry(
             file=target_file,
-            fact=c["text"],
+            fact=fact_text,
             source=c["source"],
             grade=c["grade"],
             tier="active",
         )
         imported += 1
-        _log.info(f"IMPORT: [{target_file}] g{c['grade']} {c['text'][:60]}")
+        _log.info(f"IMPORT: [{target_file}] g{c['grade']} {fact_text[:60]}")
 
     # Run conflict detection after import to catch contradictions
     conflicts_found = 0
@@ -383,7 +470,8 @@ def auto_import(candidates: list[dict], db: KontextDB, min_grade: int = 7) -> di
         if conflicts_found > 0:
             _log.warning(f"IMPORT: {conflicts_found} new conflict(s) detected after import")
 
-    return {"imported": imported, "skipped": skipped, "conflicts_found": conflicts_found, "total": len(candidates)}
+    return {"imported": imported, "skipped": skipped, "distill_dropped": distill_dropped,
+            "conflicts_found": conflicts_found, "total": len(candidates)}
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +505,7 @@ def process_digests(auto: bool = False, dry_run: bool = False,
         files = [f for f in files if f.name != "_manifest.md"]
 
     all_candidates = []
+    successfully_processed: list[Path] = []  # for move-to-_processed below
     for filepath in files:
         if not filepath.exists():
             _log.warning(f"Digest file missing: {filepath}")
@@ -426,16 +515,31 @@ def process_digests(auto: bool = False, dry_run: bool = False,
         results["files_processed"] += 1
         results["candidates_found"] += len(candidates)
         all_candidates.extend(candidates)
+        successfully_processed.append(filepath)
         _log.info(f"EXTRACT: {filepath.name} → {len(candidates)} candidates")
 
-    # Deduplicate across digest files (same message can appear in overlapping digests)
-    seen_texts = set()
+    # Deduplicate across digest files (same message can appear in overlapping digests).
+    # Two-pass: cheap 80-char prefix exact-match, then fuzzy 0.85 similarity over
+    # what survives — catches "Active students: 24" vs "Active students: 24 paying"
+    # the same way sync.py already does for flat-file imports.
+    from difflib import SequenceMatcher
+    seen_prefixes = set()
     unique_candidates = []
     for c in all_candidates:
         key = c["text"][:80]
-        if key not in seen_texts:
-            seen_texts.add(key)
-            unique_candidates.append(c)
+        if key in seen_prefixes:
+            continue
+        # Fuzzy check against already-kept candidates
+        is_dup = False
+        c_lower = c["text"].lower()
+        for kept in unique_candidates:
+            if SequenceMatcher(None, c_lower, kept["text"].lower()).ratio() >= 0.85:
+                is_dup = True
+                break
+        if is_dup:
+            continue
+        seen_prefixes.add(key)
+        unique_candidates.append(c)
 
     # Deduplicate against existing database
     fresh = deduplicate_candidates(unique_candidates, db)
@@ -465,6 +569,23 @@ def process_digests(auto: bool = False, dry_run: bool = False,
         # Write candidates file for manual review
         write_candidates_file(fresh, CANDIDATES_FILE)
         print(f"Wrote {len(fresh)} candidates to {CANDIDATES_FILE}")
+
+    # Move successfully processed files to _processed/ so the next run doesn't
+    # re-parse them. DB-level dedup makes re-parsing safe but wasteful, and
+    # orphans in _digests/ now clearly mean "unfinished work" — useful signal
+    # for partial-crash recovery.
+    if not specific_file and successfully_processed:
+        processed_dir = DIGEST_DIR / "_processed"
+        try:
+            processed_dir.mkdir(exist_ok=True)
+            for fp in successfully_processed:
+                target = processed_dir / fp.name
+                if target.exists():
+                    target.unlink()  # idempotent re-runs
+                fp.rename(target)
+            _log.info(f"ARCHIVED: {len(successfully_processed)} files → {processed_dir}")
+        except OSError as e:
+            _log.warning(f"ARCHIVE: failed to move processed files — {e}")
 
     # Clear the pending flag
     if PENDING_FLAG.exists() and not specific_file:

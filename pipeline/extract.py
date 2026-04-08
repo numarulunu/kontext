@@ -124,6 +124,9 @@ def find_new_files(manifest: dict) -> list[Path]:
         else:
             print(f"  [NEW] {rel_path}")
 
+        # Stash the hash on the Path so main() doesn't recompute it.
+        # (Path is just a namespace here — we're not mutating the filesystem.)
+        item._kontext_hash = current_hash  # type: ignore[attr-defined]
         new_files.append(item)
 
     return new_files
@@ -237,9 +240,10 @@ def main() -> None:
 
         all_chunks.extend(chunks)
 
-        # Update manifest
+        # Update manifest — reuse the hash computed during find_new_files.
+        cached_hash = getattr(filepath, "_kontext_hash", None) or file_hash(filepath)
         manifest["files"][rel_path] = {
-            "hash": file_hash(filepath),
+            "hash": cached_hash,
             "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "chunks": len(chunks),
             "messages": len(messages),

@@ -10,7 +10,7 @@ from pathlib import Path
 from install_hooks import (
     load_settings, save_settings, _has_kontext_hook, install,
     KONTEXT_SESSION_DETECT, KONTEXT_SESSION_SAVE, KONTEXT_MEMORY_SAVE,
-    KONTEXT_POSTCOMPACT, HAIKU_MODEL, SETTINGS_PATH,
+    SETTINGS_PATH,
 )
 
 
@@ -84,15 +84,44 @@ class TestInstall:
         import install_hooks
         settings = json.loads(install_hooks.SETTINGS_PATH.read_text(encoding="utf-8"))
         assert "UserPromptSubmit" in settings["hooks"]
-        assert "PostCompact" in settings["hooks"]
         assert len(settings["hooks"]["UserPromptSubmit"]) == 3
-        assert len(settings["hooks"]["PostCompact"]) == 1
+        # PostCompact is no longer installed; if the section exists at all it
+        # must be empty (never contain a Kontext-authored hook).
+        assert not settings["hooks"].get("PostCompact")
 
     def test_idempotent_installation(self, settings_dir, capsys):
         install()
         install()  # Second install should not duplicate
         import install_hooks
         settings = json.loads(install_hooks.SETTINGS_PATH.read_text(encoding="utf-8"))
+        assert len(settings["hooks"]["UserPromptSubmit"]) == 3
+
+    def test_migrates_existing_postcompact_hook_away(self, settings_dir):
+        """Users upgrading from an older Kontext that installed a PostCompact
+        hook must see it removed on the next install, without losing any
+        user-authored hooks that happen to live in the same section."""
+        import install_hooks
+        # Seed settings with a Kontext-tagged PostCompact + a user-authored one
+        seeded = {
+            "hooks": {
+                "PostCompact": [
+                    {"hooks": [
+                        {"type": "agent", "prompt": "Kontext save state via db.add_entry"},
+                        {"type": "command", "command": "echo user-keep-me"},
+                    ]},
+                ],
+            },
+        }
+        install_hooks.SETTINGS_PATH.write_text(json.dumps(seeded), encoding="utf-8")
+        install()
+        settings = json.loads(install_hooks.SETTINGS_PATH.read_text(encoding="utf-8"))
+        # Kontext PostCompact gone
+        remaining_pc = settings["hooks"].get("PostCompact", [])
+        flat = [h for grp in remaining_pc for h in grp.get("hooks", [])]
+        assert not any("kontext" in (h.get("prompt", "") + h.get("command", "")).lower() for h in flat)
+        # User-authored hook preserved
+        assert any(h.get("command") == "echo user-keep-me" for h in flat)
+        # UserPromptSubmit hooks still get installed
         assert len(settings["hooks"]["UserPromptSubmit"]) == 3
 
     def test_cleans_dead_session_end(self, settings_dir):
@@ -107,19 +136,6 @@ class TestInstall:
 
 
 class TestHookConstants:
-    def test_haiku_model_is_valid(self):
-        assert "claude" in HAIKU_MODEL
-        assert "haiku" in HAIKU_MODEL
-
-    def test_postcompact_uses_haiku_model(self):
-        hook = KONTEXT_POSTCOMPACT["hooks"][0]
-        assert hook["model"] == HAIKU_MODEL
-
-    def test_postcompact_has_6_fields(self):
-        prompt = KONTEXT_POSTCOMPACT["hooks"][0]["prompt"]
-        assert "summary" in prompt
-        assert "files_touched" in prompt
-
     def test_memory_save_throttle_is_60s(self):
         cmd = KONTEXT_MEMORY_SAVE["hooks"][0]["command"]
         assert "60" in cmd

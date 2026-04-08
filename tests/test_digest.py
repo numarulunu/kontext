@@ -169,3 +169,206 @@ class TestRouting:
 
     def test_default_fallback(self):
         assert route_to_file("Unknown Project", "unknown_type") == "user_identity.md"
+
+
+class TestProcessDigests:
+    """Integration coverage for digest.process_digests — the orchestration
+    layer that ingests raw user messages straight into the DB. Previously
+    untested end-to-end."""
+
+    @pytest.fixture
+    def patched(self, monkeypatch, tmp_path, db):
+        """Patch module-level state so process_digests uses our test DB and
+        a tmp pending flag, not the user's real Backup System."""
+        import digest as digest_mod
+        # KontextDB() inside process_digests must yield our test db
+        monkeypatch.setattr(digest_mod, "KontextDB", lambda *a, **kw: _NoCloseDB(db))
+        # Use tmp pending flag so unlink doesn't touch the real one
+        pending = tmp_path / "_digest-pending"
+        pending.write_text("", encoding="utf-8")
+        monkeypatch.setattr(digest_mod, "PENDING_FLAG", pending)
+        # Block the export side-effects in auto mode
+        monkeypatch.setattr("mcp_server.find_memory_dir", lambda: None)
+        # Stub Haiku distillation — tests don't hit the real API
+        monkeypatch.setattr(digest_mod, "distill_with_haiku", lambda text: text)
+        return {"pending": pending}
+
+    def test_auto_mode_imports_high_grade_candidates(self, patched, db, digest_file):
+        from digest import process_digests
+        result = process_digests(auto=True, specific_file=digest_file, min_grade=7)
+        assert result["files_processed"] == 1
+        assert result["imported"] >= 1
+        # The status_change "Skool community is live" (grade 8) should be in DB
+        hits = db.search_entries("Skool community is live")
+        assert len(hits) >= 1
+
+    def test_auto_mode_clears_pending_flag(self, patched, digest_file):
+        from digest import process_digests
+        # specific_file path skips the unlink — use manifest path instead
+        # by faking the manifest + glob via monkeypatch
+        import digest as digest_mod
+        # Re-patch DIGEST_DIR + MANIFEST so the non-specific_file branch runs
+        digest_dir = digest_file.parent
+        manifest = digest_dir / "_manifest.md"
+        manifest.write_text("", encoding="utf-8")
+        import unittest.mock as mock
+        with mock.patch.object(digest_mod, "DIGEST_DIR", digest_dir), \
+             mock.patch.object(digest_mod, "MANIFEST", manifest):
+            assert patched["pending"].exists()
+            process_digests(auto=True, min_grade=7)
+            assert not patched["pending"].exists()
+
+    def test_auto_mode_idempotent(self, patched, db, digest_file):
+        """Running twice should produce zero new imports the second time."""
+        from digest import process_digests
+        r1 = process_digests(auto=True, specific_file=digest_file, min_grade=7)
+        r2 = process_digests(auto=True, specific_file=digest_file, min_grade=7)
+        assert r1["imported"] >= 1
+        assert r2["imported"] == 0  # all dedup'd against the DB
+
+    def test_auto_mode_skips_low_grade(self, patched, db, digest_file):
+        """min_grade=11 means nothing qualifies — no imports."""
+        from digest import process_digests
+        result = process_digests(auto=True, specific_file=digest_file, min_grade=11)
+        assert result["imported"] == 0
+
+    def test_partial_crash_propagates(self, patched, db, digest_file, monkeypatch):
+        """If db.add_entry raises mid-import, the exception propagates and the
+        pending flag is NOT cleared (caller can retry)."""
+        from digest import process_digests
+        original_add = db.add_entry
+        call_count = {"n": 0}
+
+        def flaky_add(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] >= 1:
+                raise RuntimeError("disk full")
+            return original_add(*args, **kwargs)
+
+        monkeypatch.setattr(db, "add_entry", flaky_add)
+        with pytest.raises(RuntimeError, match="disk full"):
+            process_digests(auto=True, specific_file=digest_file, min_grade=7)
+        # specific_file path doesn't touch pending flag — assert it's still there
+        assert patched["pending"].exists()
+
+
+class TestDistillation:
+    """Haiku distillation in auto_import — drop raw chatter, keep only the distilled fact."""
+
+    def test_distill_skip_drops_candidate(self, db, monkeypatch):
+        """If Haiku returns SKIP (None), the candidate must NOT be stored."""
+        from digest import auto_import
+        import digest as digest_mod
+        monkeypatch.setattr(digest_mod, "distill_with_haiku", lambda text: None)
+        candidates = [{
+            "text": "ok cool", "grade": 8, "type": "decision",
+            "source": "[test]", "project": "Test",
+        }]
+        result = auto_import(candidates, db)
+        assert result["imported"] == 0
+        assert result["distill_dropped"] == 1
+        assert db.get_entries() == []
+
+    def test_distill_replaces_text(self, db, monkeypatch):
+        """Distilled text — not the raw — is what lands in the DB."""
+        from digest import auto_import
+        import digest as digest_mod
+        monkeypatch.setattr(digest_mod, "distill_with_haiku",
+                            lambda text: "Ionut switched invoicing from Stripe to Revolut.")
+        candidates = [{
+            "text": "ok so I'm definitely going with Revolut now instead of Stripe lol",
+            "grade": 9, "type": "decision",
+            "source": "[test]", "project": "Test",
+        }]
+        result = auto_import(candidates, db)
+        assert result["imported"] == 1
+        rows = db.get_entries()
+        assert len(rows) == 1
+        assert "Ionut switched" in rows[0]["fact"]
+        assert "lol" not in rows[0]["fact"]  # raw chatter dropped
+
+    def test_distill_unavailable_drops_all(self, db, monkeypatch):
+        """If Haiku is unreachable (no key, no network), no raw fallback."""
+        from digest import auto_import
+        import digest as digest_mod
+        monkeypatch.setattr(digest_mod, "distill_with_haiku", lambda text: None)
+        candidates = [
+            {"text": "fact one", "grade": 8, "type": "decision", "source": "[t]", "project": "P"},
+            {"text": "fact two", "grade": 9, "type": "metric", "source": "[t]", "project": "P"},
+        ]
+        result = auto_import(candidates, db)
+        assert result["imported"] == 0
+        assert result["distill_dropped"] == 2
+
+    def test_distill_false_bypasses(self, db):
+        """distill=False stores raw text — used by tests and one-off imports."""
+        from digest import auto_import
+        candidates = [{
+            "text": "raw text", "grade": 8, "type": "decision",
+            "source": "[t]", "project": "P",
+        }]
+        result = auto_import(candidates, db, distill=False)
+        assert result["imported"] == 1
+
+
+class TestArchiveProcessed:
+    """Processed digest files should move to _processed/ on success."""
+
+    def test_archives_processed_files(self, monkeypatch, tmp_path, db, digest_file):
+        """After a successful run, the digest file moves to _processed/."""
+        import digest as digest_mod
+        # Wire process_digests to read from a tmp digest dir
+        digest_dir = digest_file.parent
+        manifest = digest_dir / "_manifest.md"
+        manifest.write_text("", encoding="utf-8")
+        pending = tmp_path / "_digest-pending"
+        pending.write_text("", encoding="utf-8")
+
+        monkeypatch.setattr(digest_mod, "KontextDB", lambda *a, **kw: _NoCloseDB(db))
+        monkeypatch.setattr(digest_mod, "DIGEST_DIR", digest_dir)
+        monkeypatch.setattr(digest_mod, "MANIFEST", manifest)
+        monkeypatch.setattr(digest_mod, "PENDING_FLAG", pending)
+        monkeypatch.setattr(digest_mod, "distill_with_haiku", lambda t: t)
+        monkeypatch.setattr("mcp_server.find_memory_dir", lambda: None)
+
+        from digest import process_digests
+        assert digest_file.exists()
+        process_digests(auto=True, min_grade=7)
+        # Original location is empty, file moved
+        assert not digest_file.exists()
+        assert (digest_dir / "_processed" / digest_file.name).exists()
+
+    def test_archive_idempotent_on_rerun(self, monkeypatch, tmp_path, db, digest_file):
+        """If a file with the same name already exists in _processed/, replace it."""
+        import digest as digest_mod
+        digest_dir = digest_file.parent
+        manifest = digest_dir / "_manifest.md"
+        manifest.write_text("", encoding="utf-8")
+        pending = tmp_path / "_digest-pending"
+        pending.write_text("", encoding="utf-8")
+        # Pre-populate _processed/ with a stale copy
+        (digest_dir / "_processed").mkdir()
+        (digest_dir / "_processed" / digest_file.name).write_text("stale", encoding="utf-8")
+
+        monkeypatch.setattr(digest_mod, "KontextDB", lambda *a, **kw: _NoCloseDB(db))
+        monkeypatch.setattr(digest_mod, "DIGEST_DIR", digest_dir)
+        monkeypatch.setattr(digest_mod, "MANIFEST", manifest)
+        monkeypatch.setattr(digest_mod, "PENDING_FLAG", pending)
+        monkeypatch.setattr(digest_mod, "distill_with_haiku", lambda t: t)
+        monkeypatch.setattr("mcp_server.find_memory_dir", lambda: None)
+
+        from digest import process_digests
+        process_digests(auto=True, min_grade=7)
+        archived = (digest_dir / "_processed" / digest_file.name).read_text(encoding="utf-8")
+        assert "stale" not in archived  # was overwritten with the fresh content
+
+
+class _NoCloseDB:
+    """Wrap a KontextDB so process_digests' .close() call is a no-op
+    (the test fixture owns the lifetime)."""
+    def __init__(self, real):
+        self._real = real
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+    def close(self):
+        pass

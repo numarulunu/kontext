@@ -314,6 +314,29 @@ class TestGrading(unittest.TestCase):
         score = grade_entry(entry)
         self.assertIsInstance(score, int)
 
+    # --- Romanian-language fixtures ---
+    # The grading system has Romanian patterns added in commit 76c6f57. These
+    # cases lock in the expected scoring so a future regex tweak can't silently
+    # break the user's primary content language.
+
+    def test_romanian_decision_scores_high(self):
+        # "Am decis să trec de la Stripe la Revolut" — explicit decision
+        entry = {"text": "Am decis să trec de la Stripe la Revolut pentru toate facturile.", "role": "user"}
+        score = grade_entry(entry)
+        self.assertGreaterEqual(score, 7, f"Romanian decision should score >= 7, got {score}")
+
+    def test_romanian_identity_scores_high(self):
+        # "Sunt profesor de canto" — identity statement
+        entry = {"text": "Sunt profesor de canto și locuiesc în Constanța.", "role": "user"}
+        score = grade_entry(entry)
+        self.assertGreaterEqual(score, 6, f"Romanian identity should score >= 6, got {score}")
+
+    def test_romanian_noise_scores_low(self):
+        # Bare acknowledgment
+        entry = {"text": "ok mersi", "role": "user"}
+        score = grade_entry(entry)
+        self.assertLessEqual(score, 4, f"Romanian noise should score <= 4, got {score}")
+
 
 # ===========================================================================
 # Chunker tests

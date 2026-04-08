@@ -99,11 +99,16 @@ class TestSync:
     def test_dry_run_doesnt_modify_db(self, db, memory_dir):
         _write_memory_file(memory_dir, "test_file.md", ["New fact for dry run"])
         from sync import sync
-        result = sync(memory_dir=memory_dir, dry_run=True)
+        # Pass the tmp_path fixture db — otherwise sync() creates its own
+        # production KontextDB() and the assertion below is vacuous.
+        result = sync(memory_dir=memory_dir, dry_run=True, db=db)
         assert result["synced"] >= 1
         # DB should still be empty
         entries = db.get_entries(file="test_file.md")
         assert len(entries) == 0
+        # Dry-run must also skip decay + dream (both are writes).
+        assert result["decayed"] == 0
+        assert result["dreamed"] == 0
 
 
 class TestMaybeDream:

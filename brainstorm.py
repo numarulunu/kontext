@@ -16,12 +16,15 @@ TOKEN_CEILING = 3000
 STALE_DAYS = 60
 LOG = Path(__file__).parent / "_brainstorm.log"
 
-logging.basicConfig(
-    filename=str(LOG),
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-)
+import logging.handlers
 _log = logging.getLogger("kontext.brainstorm")
+if not _log.handlers:
+    _log.setLevel(logging.INFO)
+    _h = logging.handlers.RotatingFileHandler(
+        str(LOG), maxBytes=1_000_000, backupCount=2, encoding="utf-8"
+    )
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    _log.addHandler(_h)
 
 
 def log(msg: str) -> None:

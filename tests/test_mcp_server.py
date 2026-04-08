@@ -152,6 +152,25 @@ class TestKontextWrite:
                     resp = handle_request(req, memory_dir, entries)
                     assert "result" in resp
 
+    def test_db_failure_returns_clean_error(self, memory_dir, entries):
+        """If db.add_entry raises (e.g. disk full), MCP must return a structured
+        error response — not a 500-style crash or malformed JSON-RPC."""
+        from mcp_server import handle_request
+        mock_db = MagicMock()
+        mock_db.add_entry.side_effect = RuntimeError("disk full")
+        with patch("mcp_server._get_db", return_value=mock_db):
+            req = _make_request("tools/call", "kontext_write", {
+                "file": "user_identity.md", "fact": "should fail",
+                "source": "[test]", "grade": 7,
+            })
+            resp = handle_request(req, memory_dir, entries)
+            # Either an explicit JSON-RPC error or an error string in the content payload
+            if "error" in resp:
+                assert "disk full" in str(resp["error"]).lower() or "failed" in str(resp["error"]).lower()
+            else:
+                text = resp["result"]["content"][0]["text"].lower()
+                assert "fail" in text or "disk full" in text or "error" in text
+
     def test_write_sanitizes_invalid_tier(self, memory_dir, entries, db):
         from mcp_server import handle_request
         with patch("mcp_server._get_db", return_value=db):
@@ -242,6 +261,39 @@ class TestKontextQuery:
             resp = handle_request(req, memory_dir, entries)
             text = resp["result"]["content"][0]["text"]
             assert "No entries" in text
+
+    def test_semantic_search_path(self, memory_dir, entries, db):
+        """semantic=True should call get_model().encode() then db.semantic_search()."""
+        from mcp_server import handle_request
+        fake_model = MagicMock()
+        fake_model.encode.return_value = [0.1, 0.2, 0.3]
+        fake_results = [
+            {"id": 1, "file": "user_identity.md", "fact": "Name: Test User",
+             "source": "[test]", "grade": 9, "tier": "active", "score": 0.92},
+        ]
+        with patch("mcp_server._get_db", return_value=db), \
+             patch("mcp_server.get_model", return_value=fake_model), \
+             patch.object(db, "semantic_search", return_value=fake_results) as mock_sem:
+            req = _make_request("tools/call", "kontext_query",
+                                {"search": "who is the user", "semantic": True, "top_k": 5})
+            resp = handle_request(req, memory_dir, entries)
+            text = resp["result"]["content"][0]["text"]
+            assert "Test User" in text
+            fake_model.encode.assert_called_once()
+            mock_sem.assert_called_once()
+            assert mock_sem.call_args.kwargs.get("limit") == 5
+
+    def test_semantic_falls_back_on_import_error(self, memory_dir, entries, db):
+        """Missing sentence_transformers → fall back to search_entries gracefully."""
+        from mcp_server import handle_request
+        with patch("mcp_server._get_db", return_value=db), \
+             patch("mcp_server.get_model", side_effect=ImportError("no module")):
+            req = _make_request("tools/call", "kontext_query",
+                                {"search": "Name", "semantic": True})
+            resp = handle_request(req, memory_dir, entries)
+            text = resp["result"]["content"][0]["text"]
+            # Should still return keyword results, not crash
+            assert "Test User" in text
 
 
 class TestUnknownMethod:

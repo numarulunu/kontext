@@ -16,17 +16,21 @@ Protocol: Claude Code MCP (stdio transport)
 
 import json
 import logging
+import logging.handlers
 import os
 import sys
 import re
 from pathlib import Path
 from datetime import datetime
 
-# Set up file logging — every write, every failure, every tool call
+# Set up file logging — every write, every failure, every tool call.
+# Rotating handler: 1 MB per file, 2 backups = hard cap ~3 MB.
 _LOG_FILE = Path(__file__).parent / "_kontext.log"
 _logger = logging.getLogger("kontext")
 _logger.setLevel(logging.INFO)
-_file_handler = logging.FileHandler(str(_LOG_FILE), encoding="utf-8")
+_file_handler = logging.handlers.RotatingFileHandler(
+    str(_LOG_FILE), maxBytes=1_000_000, backupCount=2, encoding="utf-8"
+)
 _file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
 _logger.addHandler(_file_handler)
 
@@ -300,6 +304,8 @@ _TOOL_DEFINITIONS = [
                 "tier": {"type": "string", "description": "Filter by tier: active, historical, or cold"},
                 "min_grade": {"type": "number", "description": "Minimum grade to include"},
                 "search": {"type": "string", "description": "Full-text search on fact content"},
+                "semantic": {"type": "boolean", "description": "Use embedding-based semantic search on entry facts (requires sentence-transformers; falls back to keyword search if unavailable)", "default": False},
+                "top_k": {"type": "integer", "description": "Max results when semantic=true (default 10)", "default": 10},
             },
         },
     },
@@ -434,11 +440,16 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
 
             if not query:
                 return _mcp_error(req_id, "query is required")
+            truncated = False
             if len(query) > 500:
-                query = query[:500]  # Truncate silently
+                query = query[:500]
+                truncated = True
 
             results = search(query, entries, top_k)
-            output_lines = [f"**Kontext Search:** {len(results)} files matched\n"]
+            header = f"**Kontext Search:** {len(results)} files matched"
+            if truncated:
+                header += "  _(WARNING: query truncated to 500 chars — results may be incomplete)_"
+            output_lines = [header + "\n"]
             for i, r in enumerate(results, 1):
                 score_pct = int(r["score"] * 100)
                 output_lines.append(f"{i}. **{r['title']}** (`{r['filename']}`) — {score_pct}% match")
@@ -500,20 +511,36 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                 entry_id = db.add_entry(file=file, fact=fact, source=source, grade=grade, tier=tier)
 
                 # Embed the new entry
+                embed_failed = False
                 try:
                     model = get_model()
                     vec = model.encode(fact).tolist()
                     db.store_embedding(entry_id, vec)
                 except Exception as embed_err:
+                    embed_failed = True
                     _logger.warning(f"EMBED FAILED for entry #{entry_id}: {type(embed_err).__name__}: {embed_err}")
 
-                # Auto-export the affected file and update MEMORY.md
-                md_content = export_file(db, file)
-                (memory_dir / file).write_text(md_content, encoding="utf-8")
-                export_memory_index(db, memory_dir)
+                # Auto-export the affected file and update MEMORY.md.
+                # FS errors are logged but do NOT roll back the DB — DB is source of truth;
+                # a partial export is recoverable via kontext_reindex.
+                export_failed = False
+                try:
+                    md_content = export_file(db, file)
+                    (memory_dir / file).write_text(md_content, encoding="utf-8")
+                    export_memory_index(db, memory_dir)
+                except Exception as export_err:
+                    export_failed = True
+                    _logger.error(f"WRITE EXPORT FAILED for entry #{entry_id}: {type(export_err).__name__}: {export_err}")
 
                 _logger.info(f"WRITE: {file} | {fact[:80]} | grade={grade} tier={tier}")
-                return _mcp_result(req_id, f"Wrote entry #{entry_id} to {file} (grade {grade}, {tier}). Exported to markdown.")
+                msg = f"Wrote entry #{entry_id} to {file} (grade {grade}, {tier})."
+                if embed_failed:
+                    msg += " NOTE: embedding failed — entry won't appear in semantic search. Run kontext_reindex to retry."
+                if export_failed:
+                    msg += " WARNING: markdown export failed — DB is correct, re-run kontext_reindex to refresh files."
+                if not (embed_failed or export_failed):
+                    msg += " Exported to markdown."
+                return _mcp_result(req_id, msg)
             except Exception as e:
                 _logger.error(f"WRITE FAILED: {e}")
                 return _mcp_error(req_id, f"kontext_write failed: {e}")
@@ -523,8 +550,43 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                 db = _get_db()
                 search_text = args.get("search", "")
 
-                if search_text:
-                    qresults = db.search_entries(search_text)
+                semantic = bool(args.get("semantic", False))
+                top_k = max(1, min(int(args.get("top_k", 10) or 10), 100))
+                fallback_note = ""
+
+                if search_text and semantic:
+                    # Embedding-based search over entry facts. Falls back to
+                    # keyword search if sentence-transformers isn't installed.
+                    try:
+                        model = get_model()
+                        vec = model.encode(search_text)
+                        if hasattr(vec, "tolist"):
+                            vec = vec.tolist()
+                        qresults = db.semantic_search(
+                            list(vec),
+                            limit=top_k,
+                            min_grade=float(args.get("min_grade") or 0),
+                            file=args.get("file"),
+                        )
+                        if args.get("tier"):
+                            qresults = [r for r in qresults if r.get("tier") == args["tier"]]
+                    except ImportError:
+                        fallback_note = " (semantic unavailable — using keyword search)"
+                        qresults = db.search_entries(
+                            search_text,
+                            file=args.get("file"),
+                            tier=args.get("tier"),
+                            min_grade=args.get("min_grade"),
+                        )
+                elif search_text:
+                    # Forward file/tier/min_grade filters to search_entries so they
+                    # aren't silently dropped when 'search' is supplied.
+                    qresults = db.search_entries(
+                        search_text,
+                        file=args.get("file"),
+                        tier=args.get("tier"),
+                        min_grade=args.get("min_grade"),
+                    )
                 else:
                     qresults = db.get_entries(
                         file=args.get("file"),
@@ -535,7 +597,7 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                 if not qresults:
                     return _mcp_result(req_id, "No entries found matching those filters.")
 
-                lines = [f"**Kontext Query:** {len(qresults)} entries\n"]
+                lines = [f"**Kontext Query:** {len(qresults)} entries{fallback_note}\n"]
                 for e in qresults:
                     lines.append(f"- [{e['file']}] (grade {e['grade']}, {e['tier']}) {e['fact']}")
 
@@ -553,7 +615,7 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                 if not entity:
                     return _mcp_error(req_id, "entity is required")
 
-                depth = args.get("depth", 2)
+                depth = max(1, min(int(args.get("depth", 2)), 5))
                 connections = query_connections(db, entity, depth)
                 description = describe_entity(db, entity)
 
@@ -574,7 +636,7 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
         elif tool_name == "kontext_recent":
             try:
                 db = _get_db()
-                hours = args.get("hours", 24)
+                hours = max(1, min(int(args.get("hours", 24)), 8760))  # cap at 1 year
                 rresults = db.get_recent_changes(hours)
 
                 if not rresults:
@@ -605,10 +667,10 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                     )
                     if total > 0:
                         from export import export_all, export_memory_index
-                        mem_dir = find_memory_dir()
-                        if mem_dir:
-                            export_all(db, mem_dir)
-                            export_memory_index(db, mem_dir)
+                        # Use the memory_dir already resolved at handler entry —
+                        # avoids a redundant find_memory_dir() disk scan.
+                        export_all(db, memory_dir)
+                        export_memory_index(db, memory_dir)
 
                 mode = "DRY RUN" if dry_run else "APPLIED"
                 lines = [f"**Dream consolidation ({mode}):**"]
@@ -647,8 +709,8 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                 db = _get_db()
                 from export import export_all, export_memory_index
 
-                days_threshold = args.get("days_threshold", 60)
-                decay_amount = args.get("decay_amount", 0.5)
+                days_threshold = max(1, min(int(args.get("days_threshold", 60)), 3650))
+                decay_amount = max(0.1, min(float(args.get("decay_amount", 0.5)), 5.0))
 
                 db.decay_scores(days_threshold=days_threshold, decay_amount=decay_amount)
 
@@ -730,6 +792,7 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                     if not conflict_id:
                         return _mcp_error(req_id, "conflict_id is required for resolve")
                     db.resolve_conflict(conflict_id, resolution)
+                    _logger.info(f"CONFLICT RESOLVED: id={conflict_id} resolution={resolution[:80]}")
                     return _mcp_result(req_id, f"Conflict #{conflict_id} resolved.")
                 else:
                     return _mcp_error(req_id, "action must be detect, list, or resolve")

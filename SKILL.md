@@ -33,11 +33,11 @@ Memory should be written via the Kontext MCP tools, NOT raw Edit/Write. The MCP 
 | Tool | Use for |
 |---|---|
 | `mcp__kontext__kontext_write` | Add/update an entry. Args: file, fact, source, grade (1-10), tier (active/historical) |
-| `mcp__kontext__kontext_query` | Check whether a fact already exists before writing |
+| `mcp__kontext__kontext_query` | Check whether a fact already exists before writing. Pass `semantic=true` + `top_k=N` for embedding-based search over entry facts (falls back to keyword search if `sentence-transformers` unavailable). |
 | `mcp__kontext__kontext_search` | Semantic search across all entries |
 | `mcp__kontext__kontext_recent` | Entries changed in the last N hours |
 | `mcp__kontext__kontext_conflicts` | Detect/list/resolve conflicts. Actions: detect, list, resolve |
-| `mcp__kontext__kontext_relate` | Add a relation between two entities (knowledge graph) |
+| `mcp__kontext__kontext_relate` | **Query** the knowledge graph: find everything connected to an entity up to N hops (read-only) |
 | `mcp__kontext__kontext_decay` | Decay grades on stale entries |
 | `mcp__kontext__kontext_session` | Save/load session state (project, status, next_step, key_decisions, summary, files_touched) |
 | `mcp__kontext__kontext_reindex` | Rebuild the in-memory index and DB embeddings |

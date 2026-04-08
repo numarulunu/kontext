@@ -5,8 +5,10 @@ Handles:
 - Creating settings.json if it doesn't exist
 - Adding hooks section if missing
 - Adding three UserPromptSubmit hooks (session detect, session save, memory save)
-- Adding PostCompact hook (direct Python via Bash, no MCP dependency)
-- Never overwrites existing hooks — only adds if missing
+  These are the only Kontext hooks — all save work is driven by user prompts,
+  throttled to once per 60s. This is the "periodic auto-save" the system runs.
+- Cleaning up any dead hooks from older Kontext versions (PostCompact, SessionEnd)
+- Never overwrites existing user hooks — only adds its own if missing
 - Creates a backup before modifying
 
 Usage: python install_hooks.py
@@ -21,35 +23,6 @@ CLAUDE_DIR = Path.home() / ".claude"
 SETTINGS_PATH = CLAUDE_DIR / "settings.json"
 
 # --- Hook definitions ---
-
-# Model used by PostCompact agent hook — update when Anthropic deprecates
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
-
-# PostCompact agent — saves memory via direct Python calls (no MCP dependency)
-KONTEXT_POSTCOMPACT = {
-    "hooks": [
-        {
-            "type": "agent",
-            "prompt": (
-                "Context was just compressed. Save state NOW before details are lost.\n\n"
-                "1. From the conversation summary, determine: project name, current status, next step, key decisions, "
-                "a 2-3 sentence conversation summary, and comma-separated list of files edited/discussed.\n"
-                "2. Get today's date by running via Bash: date +%Y-%m\n"
-                '3. Save session — run via Bash tool (replace placeholders with real values, escape single quotes):\n'
-                '   cd "$HOME/Desktop/Claude/Kontext" && python -c "from db import KontextDB; db = KontextDB(); '
-                "db.save_session(project='PROJECT', status='STATUS', next_step='NEXT', key_decisions='DECISIONS', "
-                "summary='SUMMARY', files_touched='FILES')\"\n"
-                "4. For any unsaved facts worth remembering, save each via Bash tool (use the date from step 2 for SOURCE):\n"
-                '   cd "$HOME/Desktop/Claude/Kontext" && python -c "from db import KontextDB; db = KontextDB(); '
-                "db.add_entry(file='FILENAME.md', fact='THE FACT', source='[Claude YYYY-MM]', grade=7, tier='active')\"\n\n"
-                "Use Bash tool directly. Do NOT use MCP tools — they may not be available in this context. Work silently."
-            ),
-            "model": HAIKU_MODEL,
-            "timeout": 45,
-            "statusMessage": "Saving context before compression...",
-        }
-    ]
-}
 
 # UserPromptSubmit hook 1: New session detector (>5 min gap = new session)
 KONTEXT_SESSION_DETECT = {
@@ -91,6 +64,9 @@ KONTEXT_SESSION_SAVE = {
 }
 
 # UserPromptSubmit hook 3: Memory save (every 60s)
+# Scope is the ENTIRE conversation since the last /clear, not just recent turns.
+# kontext_query dedup prevents re-writes; FTS5 makes the dedup cheap. Combined
+# with the 60s throttle this gives full-session coverage at bounded token cost.
 KONTEXT_MEMORY_SAVE = {
     "hooks": [
         {
@@ -100,14 +76,17 @@ KONTEXT_MEMORY_SAVE = {
                 'test -f "$THROTTLE" && LAST=$(cat "$THROTTLE"); DIFF=$((NOW - LAST)); '
                 'if [ "$DIFF" -lt 60 ]; then echo \'{"suppressOutput":true}\'; '
                 'else echo "$NOW" > "$THROTTLE"; '
-                'echo \'{"additionalContext":"[Kontext] MEMORY SAVE. Check the last few user messages for: '
+                'echo \'{"additionalContext":"[Kontext] MEMORY SAVE. Scan the ENTIRE current conversation '
+                "(every user message since the session started / last /clear) for memory-worthy content: "
                 "decisions (switching tools, changing plans), self-facts (numbers, names, dates, status updates), "
                 "corrections (updating existing info), preferences (likes, dislikes, workflow choices), "
                 "project status changes (launched, stalled, killed, pivoted). "
                 "Skip: debugging details, code questions, greetings, acknowledgments. "
-                "Use kontext_query to check for duplicates, then kontext_write for genuinely new entries. "
+                "MANDATORY: call kontext_query on each candidate BEFORE writing to skip duplicates — "
+                "FTS5 dedup is cheap and this is the only thing that keeps the periodic scan token-efficient. "
+                "Then kontext_write only the genuinely new entries. "
                 "Include a dated source tag [Claude YYYY-MM]. Grade 8-10 for decisions/identity, 5-7 for context. "
-                'Silent."}\'; fi'
+                'Silent. Do not announce."}\'; fi'
             ),
             "timeout": 2,
         }
@@ -152,6 +131,31 @@ def _has_kontext_hook(settings: dict, hook_type: str) -> bool:
     return False
 
 
+def _strip_kontext_hooks_from(settings: dict, hook_type: str) -> int:
+    """Remove any Kontext-tagged hooks from `hook_type`. Returns count removed.
+
+    Leaves user-authored hooks in that section untouched. If the section ends
+    up empty, it's emptied (not deleted) to match existing test expectations.
+    """
+    if hook_type not in settings.get("hooks", {}):
+        return 0
+    removed = 0
+    kept = []
+    for group in settings["hooks"][hook_type]:
+        group_hooks = group.get("hooks", [])
+        filtered = []
+        for hook in group_hooks:
+            blob = (hook.get("command", "") + hook.get("prompt", "")).lower()
+            if "kontext" in blob or KONTEXT_HOOK_MARKER in blob:
+                removed += 1
+                continue
+            filtered.append(hook)
+        if filtered:
+            kept.append({**group, "hooks": filtered})
+    settings["hooks"][hook_type] = kept
+    return removed
+
+
 def install():
     """Main installation logic."""
     print("Installing Kontext hooks into Claude Code settings...")
@@ -163,34 +167,40 @@ def install():
 
     settings = load_settings()
 
-    userprompt_installed = _has_kontext_hook(settings, "UserPromptSubmit")
-    postcompact_installed = _has_kontext_hook(settings, "PostCompact")
-
-    if userprompt_installed and postcompact_installed:
-        print("  Kontext hooks already installed. Nothing to do.")
-        return
-
     if "hooks" not in settings:
         settings["hooks"] = {}
 
-    to_install = []
-    if not userprompt_installed:
-        to_install.append(("UserPromptSubmit", KONTEXT_SESSION_DETECT, "Session detector"))
-        to_install.append(("UserPromptSubmit", KONTEXT_SESSION_SAVE, "Session save (60s)"))
-        to_install.append(("UserPromptSubmit", KONTEXT_MEMORY_SAVE, "Memory save (60s)"))
-    if not postcompact_installed:
-        to_install.append(("PostCompact", KONTEXT_POSTCOMPACT, "Post-compression save (Bash, no MCP)"))
+    # Clean up dead hooks from older Kontext versions BEFORE the install-check,
+    # so users who had a PostCompact hook from an earlier version get it
+    # removed the next time they run setup. PostCompact isn't useful for users
+    # who rely on /clear instead of /compact — every save is already driven
+    # periodically by the UserPromptSubmit hooks below.
+    removed = _strip_kontext_hooks_from(settings, "PostCompact")
+    if removed:
+        print(f"  Cleaned: Removed {removed} dead Kontext PostCompact hook(s)")
+    if "SessionEnd" in settings["hooks"]:
+        settings["hooks"]["SessionEnd"] = []
+        print("  Cleaned: Removed dead SessionEnd hooks")
+
+    # Always strip and reinstall Kontext UserPromptSubmit hooks. This makes
+    # install idempotent *and* guarantees users pick up updated hook prompts
+    # when they reinstall, without ever duplicating. User-authored hooks in
+    # the same section are preserved by _strip_kontext_hooks_from.
+    removed_ups = _strip_kontext_hooks_from(settings, "UserPromptSubmit")
+    if removed_ups:
+        print(f"  Refreshed: Stripped {removed_ups} previous Kontext UserPromptSubmit hook(s)")
+
+    to_install = [
+        ("UserPromptSubmit", KONTEXT_SESSION_DETECT, "Session detector"),
+        ("UserPromptSubmit", KONTEXT_SESSION_SAVE, "Session save (60s)"),
+        ("UserPromptSubmit", KONTEXT_MEMORY_SAVE, "Memory save (60s)"),
+    ]
 
     for hook_type, hook_data, label in to_install:
         if hook_type not in settings["hooks"]:
             settings["hooks"][hook_type] = []
         settings["hooks"][hook_type].append(hook_data)
         print(f"  Installed: {label}")
-
-    # Clean up dead SessionEnd hooks
-    if "SessionEnd" in settings["hooks"]:
-        settings["hooks"]["SessionEnd"] = []
-        print("  Cleaned: Removed dead SessionEnd hooks")
 
     save_settings(settings)
     print(f"  Settings saved to {SETTINGS_PATH}")

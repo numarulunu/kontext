@@ -41,8 +41,10 @@ _DECISION_PATTERNS = [
     r"\bam decis\b",
     r"\bmerg pe\b",
     r"\bm-am hotărât\b",
-    r"\bo să\b",
-    r"\bvreau să\b",
+    # `o să` / `vreau să` alone are plain Romanian future tense and fired on
+    # every routine errand. Require a commitment verb within the next few words.
+    r"\bo să\b.{0,40}\b(?:lansez|livrez|renunț|încep|termin|plătesc|cumpăr|vând)\b",
+    r"\bvreau să\b.{0,40}\b(?:lansez|livrez|renunț|încep|termin|construiesc|schimb)\b",
     r"\brenunț la\b",
     r"\bde acum\b",
     r"\bplanul e\b",
@@ -91,8 +93,8 @@ _PREFERENCE_PATTERNS = [
     r"\bstop doing\b",
     r"\bdon't ever\b",
     r"\bmake sure\b.*\balways\b",
-    # Romanian
-    r"\bprefer\b",
+    # Romanian — `\bprefer\b` alone also fires on English "prefer"; require Romanian context.
+    r"\bprefer\b\s+(?:să|mai|asta|aia)\b",
     r"\burăsc\b",
     r"\bîmi place\b",
     r"\bnu vreau\b",

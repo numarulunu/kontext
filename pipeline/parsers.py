@@ -196,7 +196,7 @@ def parse_chatgpt_file(path: Path) -> list[dict]:
 # Patterns for turn markers. Gemini exports have no standard format,
 # so we match common patterns: "You:", "Gemini:", "User:", "Model:", etc.
 _GEMINI_TURN_RE = re.compile(
-    r"^(?P<role>You|User|Human|Gemini|Model|Assistant|AI)\s*:\s*",
+    r"^(?P<role>You|User|Human|Gemini|Model|Assistant|AI|Claude|Claude Code|Opus|Sonnet|Haiku)\s*:\s*",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -274,7 +274,7 @@ def parse_gemini_text(text: str, title: Optional[str] = None) -> list[dict]:
 # WhatsApp format: [DD/MM/YYYY, HH:MM:SS] Name: message
 # Some exports omit seconds: [DD/MM/YYYY, HH:MM]
 _WA_LINE_RE = re.compile(
-    r"^\[?(\d{1,2}/\d{1,2}/\d{2,4}),?\s+(\d{1,2}:\d{2}(?::\d{2})?)\]?\s*[-–]?\s*(.+?):\s(.+)",
+    r"^\[?(\d{1,2}/\d{1,2}/\d{2,4}),?\s+(\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp][Mm])?)\]?\s*[-–]?\s*(.+?):\s(.+)",
     re.DOTALL,
 )
 
