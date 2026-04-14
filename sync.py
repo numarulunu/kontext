@@ -13,7 +13,7 @@ import sys
 import logging
 import logging.handlers
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 _LOG_FILE = Path(__file__).parent / "_kontext.log"
 log = logging.getLogger("kontext.sync")
@@ -31,10 +31,12 @@ _DREAM_STAMP = Path(__file__).parent / "_dream_last"
 
 def _maybe_dream(db) -> int:
     """Run dream consolidation if >24h since last run. Returns action count."""
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     if _DREAM_STAMP.exists():
         try:
             last = datetime.fromisoformat(_DREAM_STAMP.read_text(encoding="utf-8").strip())
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
             if (now - last).total_seconds() < 86400:
                 return 0
         except (ValueError, OSError):

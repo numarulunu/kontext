@@ -254,18 +254,32 @@ def _mcp_error(req_id, text: str) -> dict:
 _TOOL_DEFINITIONS = [
     {
         "name": "kontext_search",
-        "description": "Search memory files by meaning. Returns the most relevant files for any query. Use this BEFORE reading memory files to know which ones to load.",
+        "description": (
+            "Search memory files by meaning. Returns the most relevant files for any query."
+            " Use mode='index' for a compact cost-aware summary before deciding which files to load."
+            " Use mode='full' (default) for descriptions + file paths."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "What you are looking for -- a topic, question, or the user message",
+                    "description": "What you are looking for — a topic, question, or user message",
                 },
                 "top_k": {
                     "type": "integer",
                     "description": "Number of results (default 5)",
                     "default": 5,
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["full", "index"],
+                    "description": (
+                        "full (default) = file paths + descriptions. "
+                        "index = compact: fact count, top grade, top fact preview, "
+                        "estimated token cost — lets you choose which files are worth loading."
+                    ),
+                    "default": "full",
                 },
             },
             "required": ["query"],
@@ -396,6 +410,31 @@ _TOOL_DEFINITIONS = [
             "required": ["action"],
         },
     },
+    {
+        "name": "kontext_prompts",
+        "description": (
+            "Search or list past user prompts. Useful for resuming context from a past session"
+            " or finding when a topic was discussed. Results are ordered newest-first."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "search": {
+                    "type": "string",
+                    "description": "Keyword to search (FTS5 trigram; leave blank for recent)",
+                },
+                "hours": {
+                    "type": "number",
+                    "description": "Restrict to prompts from the last N hours",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results to return (default 20, max 100)",
+                    "default": 20,
+                },
+            },
+        },
+    },
 ]
 
 
@@ -436,7 +475,8 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
 
         if tool_name == "kontext_search":
             query = args.get("query", "")
-            top_k = min(args.get("top_k", 5), 20)  # Cap results
+            top_k = min(args.get("top_k", 5), 20)
+            mode = args.get("mode", "full")
 
             if not query:
                 return _mcp_error(req_id, "query is required")
@@ -448,13 +488,40 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
             results = search(query, entries, top_k)
             header = f"**Kontext Search:** {len(results)} files matched"
             if truncated:
-                header += "  _(WARNING: query truncated to 500 chars — results may be incomplete)_"
+                header += "  _(query truncated to 500 chars)_"
             output_lines = [header + "\n"]
-            for i, r in enumerate(results, 1):
-                score_pct = int(r["score"] * 100)
-                output_lines.append(f"{i}. **{r['title']}** (`{r['filename']}`) — {score_pct}% match")
-                output_lines.append(f"   {r['description']}")
-                output_lines.append(f"   Path: `{r['path']}`\n")
+
+            if mode == "index":
+                # Progressive disclosure: compact index with DB stats per file.
+                try:
+                    file_stats = _get_db().get_file_stats()
+                except Exception:
+                    file_stats = {}
+                for i, r in enumerate(results, 1):
+                    score_pct = int(r["score"] * 100)
+                    fname = r["filename"]
+                    st = file_stats.get(fname, {})
+                    fact_count = st.get("fact_count", "?")
+                    top_grade = st.get("top_grade", "?")
+                    est_tokens = fact_count * 15 if isinstance(fact_count, int) else "?"
+                    top_fact = st.get("top_fact", "") or ""
+                    preview = (top_fact[:80] + "…") if len(top_fact) > 80 else top_fact
+                    output_lines.append(
+                        f"{i}. **{r['title']}** (`{fname}`) — {score_pct}% match"
+                        f" | {fact_count} facts | top grade {top_grade} | ~{est_tokens} tokens"
+                    )
+                    if preview:
+                        output_lines.append(f"   Preview: {preview}")
+                    output_lines.append(f"   Path: `{r['path']}`\n")
+            else:
+                # Existing full mode
+                for i, r in enumerate(results, 1):
+                    score_pct = int(r["score"] * 100)
+                    output_lines.append(
+                        f"{i}. **{r['title']}** (`{r['filename']}`) — {score_pct}% match"
+                    )
+                    output_lines.append(f"   {r['description']}")
+                    output_lines.append(f"   Path: `{r['path']}`\n")
 
             return {
                 "jsonrpc": "2.0",
@@ -593,6 +660,15 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                         tier=args.get("tier"),
                         min_grade=args.get("min_grade"),
                     )
+
+                # Bump access count for every returned entry (non-critical; swallow errors).
+                try:
+                    _db = _get_db()
+                    for _e in qresults:
+                        if _e.get("id"):
+                            _db.bump_access_count(_e["id"])
+                except Exception:
+                    pass
 
                 if not qresults:
                     return _mcp_result(req_id, "No entries found matching those filters.")
@@ -798,6 +874,36 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                     return _mcp_error(req_id, "action must be detect, list, or resolve")
             except Exception as e:
                 return _mcp_error(req_id, f"kontext_conflicts failed: {e}")
+
+        elif tool_name == "kontext_prompts":
+            try:
+                db = _get_db()
+                query = args.get("search", "")
+                hours = args.get("hours")
+                limit = min(int(args.get("limit", 20) or 20), 100)
+
+                if query:
+                    results = db.search_prompts(query=query, limit=limit, hours=hours)
+                elif hours is not None:
+                    results = db.get_recent_prompts(hours=hours, limit=limit)
+                else:
+                    results = db.get_recent_prompts(hours=24, limit=limit)
+
+                if not results:
+                    return _mcp_result(req_id, "No prompts found.")
+
+                lines = [f"**Past prompts:** {len(results)} found\n"]
+                for p in results:
+                    ts = str(p.get("created_at", ""))[:16]
+                    content = p.get("content", "")
+                    preview = (content[:100] + "…") if len(content) > 100 else content
+                    lines.append(f"- `{ts}` {preview}")
+
+                _logger.info(f"PROMPTS: {len(results)} results | search={query[:40]} hours={hours}")
+                return _mcp_result(req_id, "\n".join(lines))
+            except Exception as e:
+                _logger.error(f"kontext_prompts error: {e}", exc_info=True)
+                return _mcp_error(req_id, f"kontext_prompts failed: {e}")
 
 
     return {

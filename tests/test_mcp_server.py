@@ -77,7 +77,7 @@ class TestToolsList:
             "kontext_search", "kontext_reindex", "kontext_write",
             "kontext_query", "kontext_relate", "kontext_recent",
             "kontext_dream", "kontext_digest", "kontext_decay",
-            "kontext_session", "kontext_conflicts",
+            "kontext_session", "kontext_conflicts", "kontext_prompts",
         }
         assert expected == tool_names
 

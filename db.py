@@ -91,10 +91,84 @@ def _migration_3_fts5_entries(conn):
     conn.execute("INSERT INTO entries_fts(entries_fts) VALUES('rebuild')")
 
 
+def _migration_4_access_count(conn):
+    """Add access_count to entries for usage-driven ranking."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(entries)").fetchall()}
+    if "access_count" not in cols:
+        conn.execute("ALTER TABLE entries ADD COLUMN access_count INTEGER DEFAULT 0")
+
+
+def _migration_5_tool_events(conn):
+    """Capture PostToolUse events for session intelligence."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS tool_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT DEFAULT '',
+            tool_name TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            file_path TEXT DEFAULT NULL,
+            grade REAL DEFAULT 5.0,
+            promoted INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_tool_events_session ON tool_events(session_id);
+        CREATE INDEX IF NOT EXISTS idx_tool_events_created ON tool_events(created_at);
+    """)
+
+
+def _migration_6_user_prompts(conn):
+    """User prompt history with FTS5 for searchable session context."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS user_prompts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT DEFAULT '',
+            content TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_prompts_session ON user_prompts(session_id);
+        CREATE INDEX IF NOT EXISTS idx_user_prompts_created ON user_prompts(created_at);
+    """)
+    if not _has_fts5(conn):
+        return
+    conn.executescript("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS user_prompts_fts USING fts5(
+            content,
+            content='user_prompts',
+            content_rowid='id',
+            tokenize='trigram'
+        );
+        CREATE TRIGGER IF NOT EXISTS prompts_ai AFTER INSERT ON user_prompts BEGIN
+            INSERT INTO user_prompts_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+        CREATE TRIGGER IF NOT EXISTS prompts_ad AFTER DELETE ON user_prompts BEGIN
+            INSERT INTO user_prompts_fts(user_prompts_fts, rowid, content)
+                VALUES('delete', old.id, old.content);
+        END;
+        CREATE TRIGGER IF NOT EXISTS prompts_au AFTER UPDATE ON user_prompts BEGIN
+            INSERT INTO user_prompts_fts(user_prompts_fts, rowid, content)
+                VALUES('delete', old.id, old.content);
+            INSERT INTO user_prompts_fts(rowid, content) VALUES(new.id, new.content);
+        END;
+    """)
+    conn.execute("INSERT INTO user_prompts_fts(user_prompts_fts) VALUES('rebuild')")
+
+
+def _migration_7_session_intelligence(conn):
+    """Add investigated + learned columns to sessions for richer auto-summaries."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+    for col in ("investigated", "learned"):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} TEXT DEFAULT ''")
+
+
 MIGRATIONS = [
     (1, _migration_1_session_summary_cols),
     (2, _migration_2_dedup_and_unique_indexes),
     (3, _migration_3_fts5_entries),
+    (4, _migration_4_access_count),
+    (5, _migration_5_tool_events),
+    (6, _migration_6_user_prompts),
+    (7, _migration_7_session_intelligence),
 ]
 LATEST_SCHEMA_VERSION = max(v for v, _ in MIGRATIONS)
 
@@ -759,6 +833,159 @@ class KontextDB:
 
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:limit]
+
+    # -------------------------------------------------------------------------
+    # Tool events
+    # -------------------------------------------------------------------------
+
+    def add_tool_event(self, session_id: str, tool_name: str, summary: str,
+                       file_path: str = None, grade: float = 5.0) -> int:
+        """Record a PostToolUse event. Returns the new row id."""
+        cursor = self._execute(
+            "INSERT INTO tool_events (session_id, tool_name, summary, file_path, grade)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (session_id or "", tool_name, summary[:500], file_path, grade),
+        )
+        return cursor.lastrowid
+
+    def get_tool_events(self, session_id: str = None, promoted: bool = False,
+                        since_hours: float = None, limit: int = 100) -> list[dict]:
+        """Fetch tool events. Filters: session_id, promoted flag, time window."""
+        conditions = ["promoted = ?"]
+        params: list = [1 if promoted else 0]
+        if session_id:
+            conditions.append("session_id = ?")
+            params.append(session_id)
+        if since_hours is not None:
+            conditions.append("created_at >= datetime('now', ?)")
+            params.append(f"-{since_hours} hours")
+        where = " AND ".join(conditions)
+        rows = self.conn.execute(
+            f"SELECT * FROM tool_events WHERE {where} ORDER BY created_at DESC LIMIT ?",
+            params + [limit],
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def promote_tool_event(self, event_id: int, file: str, fact: str) -> None:
+        """Promote a tool_event into a permanent entries row and mark it promoted."""
+        event = self.conn.execute(
+            "SELECT * FROM tool_events WHERE id = ?", (event_id,)
+        ).fetchone()
+        if not event:
+            raise ValueError(f"tool_event {event_id} not found")
+        with self.transaction():
+            self.add_entry(file=file, fact=fact, source="[tool_event]",
+                           grade=event["grade"], tier="active")
+            self._execute(
+                "UPDATE tool_events SET promoted = 1 WHERE id = ?", (event_id,)
+            )
+
+    # -------------------------------------------------------------------------
+    # User prompts
+    # -------------------------------------------------------------------------
+
+    def add_user_prompt(self, session_id: str, content: str) -> int:
+        """Log a user prompt. Content is hard-capped at 2000 chars. Returns row id."""
+        if len(content) > 2000:
+            content = content[:2000]
+        cursor = self._execute(
+            "INSERT INTO user_prompts (session_id, content) VALUES (?, ?)",
+            (session_id or "", content),
+        )
+        return cursor.lastrowid
+
+    def search_prompts(self, query: str = "", limit: int = 20,
+                       hours: float = None) -> list[dict]:
+        """FTS5 (or LIKE fallback) search over user_prompts. Optionally restrict to last N hours."""
+        params: list = []
+        time_filter = ""        # used by LIKE and unconditional branches (no JOIN)
+        fts_time_filter = ""    # used by FTS branch (has JOIN, needs table qualifier)
+        if hours is not None:
+            time_filter = "AND created_at >= datetime('now', ?)"
+            fts_time_filter = "AND up.created_at >= datetime('now', ?)"
+            params.append(f"-{hours} hours")
+
+        fts_available = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='user_prompts_fts'"
+        ).fetchone()
+
+        if fts_available and query:
+            safe_q = '"' + query.replace('"', '""') + '"'
+            rows = self.conn.execute(
+                f"SELECT up.* FROM user_prompts up"
+                f" JOIN user_prompts_fts fts ON fts.rowid = up.id"
+                f" WHERE user_prompts_fts MATCH ? {fts_time_filter}"
+                f" ORDER BY up.created_at DESC LIMIT ?",
+                [safe_q] + params + [limit],
+            ).fetchall()
+        elif query:
+            rows = self.conn.execute(
+                f"SELECT * FROM user_prompts WHERE content LIKE ? {time_filter}"
+                f" ORDER BY created_at DESC LIMIT ?",
+                [f"%{query}%"] + params + [limit],
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                f"SELECT * FROM user_prompts WHERE 1=1 {time_filter}"
+                f" ORDER BY created_at DESC LIMIT ?",
+                params + [limit],
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_recent_prompts(self, hours: float = 24, limit: int = 50) -> list[dict]:
+        """Return the most recent user prompts within the last N hours."""
+        rows = self.conn.execute(
+            "SELECT * FROM user_prompts"
+            " WHERE created_at >= datetime('now', ?)"
+            " ORDER BY created_at DESC LIMIT ?",
+            (f"-{hours} hours", limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # -------------------------------------------------------------------------
+    # Access count
+    # -------------------------------------------------------------------------
+
+    def bump_access_count(self, entry_id: int) -> None:
+        """Increment access_count and refresh last_accessed for a single entry."""
+        self._execute(
+            "UPDATE entries SET access_count = access_count + 1,"
+            " last_accessed = datetime('now') WHERE id = ?",
+            (entry_id,),
+        )
+
+    # -------------------------------------------------------------------------
+    # File stats (for progressive disclosure)
+    # -------------------------------------------------------------------------
+
+    def get_file_stats(self) -> dict[str, dict]:
+        """Return per-file aggregates: fact_count, top_grade, access_sum, top_fact preview."""
+        rows = self.conn.execute("""
+            SELECT
+                e1.file,
+                COUNT(*) AS fact_count,
+                MAX(e1.grade) AS top_grade,
+                COALESCE(SUM(e1.access_count), 0) AS access_sum,
+                (SELECT fact FROM entries e2
+                 WHERE e2.file = e1.file
+                 ORDER BY e2.grade DESC, e2.access_count DESC
+                 LIMIT 1) AS top_fact
+            FROM entries e1
+            GROUP BY e1.file
+        """).fetchall()
+        return {row["file"]: dict(row) for row in rows}
+
+    # -------------------------------------------------------------------------
+    # Session utilities
+    # -------------------------------------------------------------------------
+
+    def get_latest_session_id(self) -> int | None:
+        """Return the integer primary key of the most recently created session row."""
+        row = self.conn.execute(
+            "SELECT id FROM sessions ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return row["id"] if row else None
+
     def __enter__(self):
         return self
 

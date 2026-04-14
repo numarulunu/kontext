@@ -4,9 +4,9 @@ install_hooks.py — Safely inject Kontext hooks into Claude Code settings.json
 Handles:
 - Creating settings.json if it doesn't exist
 - Adding hooks section if missing
-- Adding three UserPromptSubmit hooks (session detect, session save, memory save)
-  These are the only Kontext hooks — all save work is driven by user prompts,
-  throttled to once per 60s. This is the "periodic auto-save" the system runs.
+- Adding four UserPromptSubmit hooks (session detect, session save, memory save,
+  prompt logger) + one PostToolUse hook (tool event capture) + one Stop hook
+  (session auto-summary)
 - Cleaning up any dead hooks from older Kontext versions (PostCompact, SessionEnd)
 - Never overwrites existing user hooks — only adds its own if missing
 - Creates a backup before modifying
@@ -21,6 +21,8 @@ from pathlib import Path
 
 CLAUDE_DIR = Path.home() / ".claude"
 SETTINGS_PATH = CLAUDE_DIR / "settings.json"
+_KONTEXT_ROOT = Path(__file__).parent.resolve()
+_HOOKS_DIR = _KONTEXT_ROOT / "hooks"
 
 # --- Hook definitions ---
 
@@ -116,6 +118,44 @@ KONTEXT_MEMORY_SAVE = {
 
 KONTEXT_HOOK_MARKER = ".kontext_seen"  # unique string to detect if our hooks are installed
 
+# PostToolUse hook: silently captures Edit/Write/Bash events to tool_events table.
+# No bash skip gate needed — KONTEXT_SKIP_HOOKS is read inside the Python script.
+KONTEXT_CAPTURE_TOOL = {
+    "matcher": "Edit|MultiEdit|Write|Bash|NotebookEdit",
+    "hooks": [
+        {
+            "type": "command",
+            "command": f'python "{(_HOOKS_DIR / "capture_tool.py").as_posix()}"',
+            "timeout": 3,
+        }
+    ],
+}
+
+# UserPromptSubmit hook: silently logs each user prompt to user_prompts table.
+KONTEXT_LOG_PROMPT = {
+    "hooks": [
+        {
+            "type": "command",
+            "command": (
+                _SKIP_GATE
+                + f'python "{(_HOOKS_DIR / "log_prompt.py").as_posix()}"'
+            ),
+            "timeout": 2,
+        }
+    ],
+}
+
+# Stop hook: template-based session summary from tool_events — no AI calls.
+KONTEXT_SESSION_SUMMARY = {
+    "hooks": [
+        {
+            "type": "command",
+            "command": f'python "{(_HOOKS_DIR / "session_summary.py").as_posix()}"',
+            "timeout": 10,
+        }
+    ],
+}
+
 
 def load_settings() -> dict:
     """Load settings.json or return default structure."""
@@ -139,7 +179,7 @@ def save_settings(settings: dict):
         shutil.copy2(SETTINGS_PATH, backup)
 
     with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
-        json.dump(settings, f, indent=2, ensure_ascii=False)
+        json.dump(settings, f, indent=2, ensure_ascii=True)
 
 
 def _has_kontext_hook(settings: dict, hook_type: str) -> bool:
@@ -203,6 +243,15 @@ def install():
         settings["hooks"]["SessionEnd"] = []
         print("  Cleaned: Removed dead SessionEnd hooks")
 
+    # Strip and reinstall PostToolUse + Stop Kontext hooks (same idempotency
+    # pattern as UserPromptSubmit).
+    removed_ptu = _strip_kontext_hooks_from(settings, "PostToolUse")
+    if removed_ptu:
+        print(f"  Refreshed: Stripped {removed_ptu} previous Kontext PostToolUse hook(s)")
+    removed_stop = _strip_kontext_hooks_from(settings, "Stop")
+    if removed_stop:
+        print(f"  Refreshed: Stripped {removed_stop} previous Kontext Stop hook(s)")
+
     # Always strip and reinstall Kontext UserPromptSubmit hooks. This makes
     # install idempotent *and* guarantees users pick up updated hook prompts
     # when they reinstall, without ever duplicating. User-authored hooks in
@@ -212,9 +261,12 @@ def install():
         print(f"  Refreshed: Stripped {removed_ups} previous Kontext UserPromptSubmit hook(s)")
 
     to_install = [
-        ("UserPromptSubmit", KONTEXT_SESSION_DETECT, "Session detector"),
-        ("UserPromptSubmit", KONTEXT_SESSION_SAVE, "Session save (60s)"),
-        ("UserPromptSubmit", KONTEXT_MEMORY_SAVE, "Memory save (60s)"),
+        ("UserPromptSubmit", KONTEXT_SESSION_DETECT,  "Session detector"),
+        ("UserPromptSubmit", KONTEXT_SESSION_SAVE,    "Session save (60s)"),
+        ("UserPromptSubmit", KONTEXT_MEMORY_SAVE,     "Memory save (60s)"),
+        ("UserPromptSubmit", KONTEXT_LOG_PROMPT,      "Prompt logger"),
+        ("PostToolUse",      KONTEXT_CAPTURE_TOOL,    "Tool event capture"),
+        ("Stop",             KONTEXT_SESSION_SUMMARY, "Session auto-summary"),
     ]
 
     for hook_type, hook_data, label in to_install:

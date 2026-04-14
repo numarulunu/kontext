@@ -10,6 +10,7 @@ from pathlib import Path
 from install_hooks import (
     load_settings, save_settings, _has_kontext_hook, install,
     KONTEXT_SESSION_DETECT, KONTEXT_SESSION_SAVE, KONTEXT_MEMORY_SAVE,
+    KONTEXT_LOG_PROMPT, KONTEXT_CAPTURE_TOOL, KONTEXT_SESSION_SUMMARY,
     SETTINGS_PATH,
 )
 
@@ -84,7 +85,9 @@ class TestInstall:
         import install_hooks
         settings = json.loads(install_hooks.SETTINGS_PATH.read_text(encoding="utf-8"))
         assert "UserPromptSubmit" in settings["hooks"]
-        assert len(settings["hooks"]["UserPromptSubmit"]) == 3
+        assert len(settings["hooks"]["UserPromptSubmit"]) == 4
+        assert len(settings["hooks"]["PostToolUse"]) == 1
+        assert len(settings["hooks"]["Stop"]) == 1
         # PostCompact is no longer installed; if the section exists at all it
         # must be empty (never contain a Kontext-authored hook).
         assert not settings["hooks"].get("PostCompact")
@@ -94,7 +97,9 @@ class TestInstall:
         install()  # Second install should not duplicate
         import install_hooks
         settings = json.loads(install_hooks.SETTINGS_PATH.read_text(encoding="utf-8"))
-        assert len(settings["hooks"]["UserPromptSubmit"]) == 3
+        assert len(settings["hooks"]["UserPromptSubmit"]) == 4
+        assert len(settings["hooks"]["PostToolUse"]) == 1
+        assert len(settings["hooks"]["Stop"]) == 1
 
     def test_migrates_existing_postcompact_hook_away(self, settings_dir):
         """Users upgrading from an older Kontext that installed a PostCompact
@@ -122,7 +127,9 @@ class TestInstall:
         # User-authored hook preserved
         assert any(h.get("command") == "echo user-keep-me" for h in flat)
         # UserPromptSubmit hooks still get installed
-        assert len(settings["hooks"]["UserPromptSubmit"]) == 3
+        assert len(settings["hooks"]["UserPromptSubmit"]) == 4
+        assert len(settings["hooks"]["PostToolUse"]) == 1
+        assert len(settings["hooks"]["Stop"]) == 1
 
     def test_cleans_dead_session_end(self, settings_dir):
         import install_hooks
