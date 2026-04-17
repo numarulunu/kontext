@@ -451,7 +451,19 @@ kontext/
 
 <br>
 
-## Self-host the Cloud
+## Optional: Multi-device Sync
+
+**Kontext runs fully local by default.** SQLite, semantic search, knowledge
+graph, dream, digest — all work offline with no cloud anywhere. You only need
+the section below if you want your memory to follow you across multiple
+devices (laptop + desktop, etc.).
+
+If you never link a cloud, `sync.py` logs a one-line warning and everything
+else keeps working. No account, no signup, no VPS required.
+
+<details>
+<summary><strong>Self-host the sync server (optional)</strong></summary>
+<br>
 
 Want cross-device sync without paying for a managed service? Run the Kontext
 control plane on any Docker-capable VPS in ~15 minutes. Full walkthrough in
@@ -468,6 +480,8 @@ ssh -L 8200:localhost:8200 user@your-vps
 
 Close the SSH session to "log out" — nothing is exposed publicly, no auth gate
 needed.
+
+</details>
 
 <br>
 
