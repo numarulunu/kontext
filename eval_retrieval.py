@@ -177,10 +177,11 @@ def run_query(db, query: str, mode: str, top_k: int, model) -> tuple[list[str], 
             _log.warning(f"SEMANTIC_FALLBACK query={query!r} err={type(e).__name__}: {e}")
             entries = db.search_entries(query, limit=entry_limit)
     elif mode == "rrf":
-        from retrieval import rrf_merge
-        fts_results = db.search_entries(query, limit=entry_limit)
+        from retrieval import rrf_merge, expand
+        expanded = expand(query)
+        fts_results = db.search_entries(expanded["literal"], limit=entry_limit)
         try:
-            vec = model.encode(query)
+            vec = model.encode(expanded["intent"])
             if hasattr(vec, "tolist"):
                 vec = vec.tolist()
             sem_results = db.semantic_search(list(vec), limit=entry_limit)

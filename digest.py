@@ -359,16 +359,9 @@ def deduplicate_candidates(candidates: list[dict], db: KontextDB) -> list[dict]:
 # File routing — map digest projects to memory files
 # ---------------------------------------------------------------------------
 
-_PROJECT_TO_FILE = {
-    "finance": "user_financial_architecture.md",
-    "pfa": "user_financial_architecture.md",
-    "contabilitate": "user_financial_architecture.md",
-    "skool": "project_content.md",
-    "youtube": "project_content.md",
-    "personal context": "user_identity.md",
-    "kontext": "design_principles.md",
-    "tool auditor": "tool_registry.md",
-}
+# Shared with retrieval/expansion.py so routing keywords and query
+# expansion keywords stay in lockstep.
+from retrieval.expansion import PROJECT_TO_FILE as _PROJECT_TO_FILE  # noqa: E402
 
 
 def route_to_file(project_name: str, candidate_type: str) -> str:

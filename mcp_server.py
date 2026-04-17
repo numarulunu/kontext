@@ -677,11 +677,14 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                 if search_text and semantic:
                     # Run FTS5 and semantic in parallel, then reciprocal-rank fuse.
                     # FTS5 wins on exact terms, semantic wins on paraphrase.
-                    # Pull a wider window per retriever (top_k * 3) so the fused
-                    # top-k has enough distinct candidates to choose from.
+                    # HyDE-style expansion bridges vocabulary gaps on the
+                    # semantic leg; the FTS5 leg keeps the literal query so
+                    # expansion tokens don't dilute term-match precision.
+                    from retrieval import rrf_merge, expand
+                    expanded = expand(search_text)
                     retriever_limit = max(top_k * 3, 20)
                     fts_results = db.search_entries(
-                        search_text,
+                        expanded["literal"],
                         limit=retriever_limit,
                         file=args.get("file"),
                         tier=args.get("tier"),
@@ -689,9 +692,8 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                     )
                     sem_results: list = []
                     try:
-                        from retrieval import rrf_merge
                         model = get_model()
-                        vec = model.encode(search_text)
+                        vec = model.encode(expanded["intent"])
                         if hasattr(vec, "tolist"):
                             vec = vec.tolist()
                         sem_results = db.semantic_search(
