@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from db import KontextDB
@@ -359,6 +359,20 @@ def _build_router(db_path: str) -> APIRouter:
                 "nav_active": "devices",
             },
         )
+
+    @router.post("/dashboard/devices/{device_id}/revoke")
+    def revoke_device_route(device_id: str):
+        with KontextDB(db_path) as req_db:
+            workspace_id = _resolve_workspace(req_db)
+            req_db.revoke_device(workspace_id, device_id)
+        return RedirectResponse(url="/dashboard/devices", status_code=303)
+
+    @router.post("/dashboard/devices/{device_id}/delete")
+    def delete_device_route(device_id: str):
+        with KontextDB(db_path) as req_db:
+            workspace_id = _resolve_workspace(req_db)
+            req_db.delete_device(workspace_id, device_id)
+        return RedirectResponse(url="/dashboard/devices", status_code=303)
 
     @router.get("/dashboard/ops", response_class=HTMLResponse)
     def ops_page(request: Request, limit: int = 50):

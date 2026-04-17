@@ -16,6 +16,7 @@
           <th class="text-left font-normal px-4 py-3">Device id</th>
           <th class="text-left font-normal px-4 py-3">Enrolled</th>
           <th class="text-left font-normal px-4 py-3">Status</th>
+          <th class="text-right font-normal px-4 py-3">Actions</th>
         </tr>
       </thead>
       <tbody>
@@ -32,9 +33,24 @@
               <span class="text-xs text-emerald-400">active</span>
             {% endif %}
           </td>
+          <td class="px-4 py-3 text-right">
+            {% if d.revoked_at %}
+              <form method="post" action="/dashboard/devices/{{ d.id }}/delete"
+                    onsubmit="return confirm('Permanently delete {{ d.label }}? History ops are kept but the device row is gone forever.');"
+                    class="inline">
+                <button class="text-xs text-red-400 hover:text-red-300 underline underline-offset-4">delete</button>
+              </form>
+            {% else %}
+              <form method="post" action="/dashboard/devices/{{ d.id }}/revoke"
+                    onsubmit="return confirm('Revoke {{ d.label }}? It will stop pushing/pulling new ops.');"
+                    class="inline">
+                <button class="text-xs dim hover:text-neutral-300 underline underline-offset-4">revoke</button>
+              </form>
+            {% endif %}
+          </td>
         </tr>
         {% else %}
-        <tr><td class="px-4 py-6 dim text-center" colspan="5">No devices enrolled.</td></tr>
+        <tr><td class="px-4 py-6 dim text-center" colspan="6">No devices enrolled.</td></tr>
         {% endfor %}
       </tbody>
     </table>

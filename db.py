@@ -1562,6 +1562,22 @@ class KontextDB:
             (workspace_id, device_id),
         )
 
+    def delete_device(self, workspace_id: str, device_id: str) -> int:
+        """Hard-delete a device row — only permitted once already revoked.
+
+        History ops authored by this device are preserved (audit trail).
+        Returns the number of rows removed (0 if the device is active or
+        doesn't exist).
+        """
+        cursor = self._execute(
+            """
+            DELETE FROM devices
+             WHERE workspace_id = ? AND id = ? AND revoked_at IS NOT NULL
+            """,
+            (workspace_id, device_id),
+        )
+        return cursor.rowcount
+
     def append_history_op(self, op_id: str, workspace_id: str, device_id: str,
                           op_kind: str, entity_type: str, entity_id: str,
                           payload: bytes, created_at: str) -> bool:
