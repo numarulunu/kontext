@@ -14,7 +14,7 @@
         "children": ["ccc-assistant"],
         "message": {
           "author": {"role": "user"},
-          "content": {"content_type": "text", "parts": ["I decided to launch my vocal coaching brand called Vocality. My rate is 50 EUR per session."]},
+          "content": {"content_type": "text", "parts": ["I decided to launch my vocal coaching brand. My rate is 50 EUR per session."]},
           "create_time": 1712188800
         }
       },

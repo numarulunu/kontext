@@ -451,6 +451,30 @@ kontext/
 
 <br>
 
+## Self-host the Cloud
+
+Want cross-device sync without paying for a managed service? Run the Kontext
+control plane on any Docker-capable VPS in ~15 minutes. Full walkthrough in
+[`docs/runbooks/kontext-vps-deployment.md`](docs/runbooks/kontext-vps-deployment.md).
+
+The sync API is served on your public domain behind Caddy auto-TLS. The
+**dashboard is bound to `127.0.0.1` on the VPS and blocked at the public
+domain** — reach it by SSH-tunneling port 8200:
+
+```bash
+ssh -L 8200:localhost:8200 user@your-vps
+# then open http://localhost:8200/dashboard in your browser
+```
+
+Close the SSH session to "log out" — nothing is exposed publicly, no auth gate
+needed.
+
+<br>
+
+---
+
+<br>
+
 ## Pairs Well With
 
 | Tool | What it adds |

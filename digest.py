@@ -65,10 +65,10 @@ HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
 _DISTILL_PROMPT = (
     "Rewrite the raw chat message below as a single-line third-person memory fact "
-    "for a personal knowledge base owned by a user named Ionut.\n\n"
+    "for a personal knowledge base owned by the user.\n\n"
     "Rules:\n"
     "- Output ONE line under 120 characters.\n"
-    "- Third person ('Ionut...', 'User...'), never first person.\n"
+    "- Third person ('User...', 'The user...'), never first person.\n"
     "- Drop hedges, filler, conversational framing. Keep numbers, names, dates, decisions.\n"
     "- If the message contains no durable fact (just chatter), output exactly: SKIP\n"
     "- No quotes, no markdown, no preamble. Just the fact, or SKIP.\n\n"
@@ -161,7 +161,7 @@ _HIGH_SIGNAL_PATTERNS = [
     # Preferences / feedback (EN + RO)
     (re.compile(r"\b(don'?t|stop|never|always|I (like|prefer|want|hate|need)|from now on|prefer|urăsc|îmi place|nu vreau|am nevoie|de acum)\b", re.I), "preference", 7),
     # People (EN + RO)
-    (re.compile(r"\b(Luiza|mama|mother|student|client|friend|elev|elevă|prieten|prietenă)\b", re.I), "people", 6),
+    (re.compile(r"\b(mama|mother|student|client|friend|elev|elevă|prieten|prietenă)\b", re.I), "people", 6),
     # Goals / plans (EN + RO)
     (re.compile(r"\b(goal|plan|target|deadline|by (January|February|March|April|May|June|July|August|September|October|November|December)|obiectiv|termen|până în (ianuarie|februarie|martie|aprilie|mai|iunie|iulie|august|septembrie|octombrie|noiembrie|decembrie))\b", re.I), "goal", 7),
     # Numbers that matter (EN + RO)
@@ -363,8 +363,8 @@ _PROJECT_TO_FILE = {
     "finance": "user_financial_architecture.md",
     "pfa": "user_financial_architecture.md",
     "contabilitate": "user_financial_architecture.md",
-    "skool": "project_vocality_content.md",
-    "youtube": "project_vocality_content.md",
+    "skool": "project_content.md",
+    "youtube": "project_content.md",
     "personal context": "user_identity.md",
     "kontext": "design_principles.md",
     "tool auditor": "tool_registry.md",

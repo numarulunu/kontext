@@ -146,7 +146,7 @@ class TestWhatsAppParsing(unittest.TestCase):
     def test_sender_in_text(self):
         """Sender name should be included in the text as [Name]."""
         msgs = parse_whatsapp_file(FIXTURES / "whatsapp_sample.txt")
-        has_name = any("[Ionut]" in m["text"] for m in msgs)
+        has_name = any("[Alice]" in m["text"] for m in msgs)
         self.assertTrue(has_name)
 
 
@@ -245,12 +245,12 @@ class TestGrading(unittest.TestCase):
     """Test the heuristic grading system."""
 
     def test_decision_language_scores_high(self):
-        entry = {"text": "I decided to launch Vocality. I'm going with the premium tier.", "role": "user"}
+        entry = {"text": "I decided to launch a new product. I'm going with the premium tier.", "role": "user"}
         score = grade_entry(entry)
         self.assertGreaterEqual(score, 8, f"Decision language should score >= 8, got {score}")
 
     def test_identity_markers_score_high(self):
-        entry = {"text": "I am a vocal coach. My name is Ionut and I live in Romania.", "role": "user"}
+        entry = {"text": "I am a vocal coach. My name is Alice and I live in Germany.", "role": "user"}
         score = grade_entry(entry)
         self.assertGreaterEqual(score, 7, f"Identity markers should score >= 7, got {score}")
 
@@ -288,7 +288,7 @@ class TestGrading(unittest.TestCase):
     def test_score_clamped_1_to_10(self):
         """Score should never go below 1 or above 10."""
         low = {"text": "ok", "role": "assistant"}
-        high = {"text": "I decided I am a vocal coach. My name is Ionut. I prefer Melocchi. From now on I teach only this method. My income is 5000 EUR. Remember that feedback for Claude.", "role": "user"}
+        high = {"text": "I decided I am a vocal coach. My name is Alice. I prefer the Example method. From now on I teach only this method. My income is 5000 EUR. Remember that feedback for Claude.", "role": "user"}
         self.assertGreaterEqual(grade_entry(low), 1)
         self.assertLessEqual(grade_entry(high), 10)
 

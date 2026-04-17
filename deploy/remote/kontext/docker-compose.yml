@@ -12,6 +12,11 @@ services:
       KONTEXT_HOST: 0.0.0.0
       KONTEXT_PORT: ${KONTEXT_PORT}
       KONTEXT_LOG_LEVEL: info
+    # 127.0.0.1 only — dashboard is localhost-only. Reach it via
+    # `ssh -L 8200:localhost:8200 user@your-vps` and browse
+    # http://localhost:8200/dashboard on your laptop.
+    ports:
+      - "127.0.0.1:8200:${KONTEXT_PORT}"
     volumes:
       - ./data/kontext:/app/data
 

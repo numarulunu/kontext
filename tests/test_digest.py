@@ -162,7 +162,7 @@ class TestRouting:
         assert route_to_file("Claude Finance", "financial") == "user_financial_architecture.md"
 
     def test_skool_project(self):
-        assert route_to_file("Claude Skool", "preference") == "project_vocality_content.md"
+        assert route_to_file("Claude Skool", "preference") == "project_content.md"
 
     def test_type_fallback(self):
         assert route_to_file("Unknown Project", "financial") == "user_financial_architecture.md"
@@ -274,7 +274,7 @@ class TestDistillation:
         from digest import auto_import
         import digest as digest_mod
         monkeypatch.setattr(digest_mod, "distill_with_haiku",
-                            lambda text: "Ionut switched invoicing from Stripe to Revolut.")
+                            lambda text: "Alice switched invoicing from Stripe to Revolut.")
         candidates = [{
             "text": "ok so I'm definitely going with Revolut now instead of Stripe lol",
             "grade": 9, "type": "decision",
@@ -284,7 +284,7 @@ class TestDistillation:
         assert result["imported"] == 1
         rows = db.get_entries()
         assert len(rows) == 1
-        assert "Ionut switched" in rows[0]["fact"]
+        assert "Alice switched" in rows[0]["fact"]
         assert "lol" not in rows[0]["fact"]  # raw chatter dropped
 
     def test_distill_unavailable_drops_all(self, db, monkeypatch):

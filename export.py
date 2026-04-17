@@ -16,27 +16,17 @@ import argparse
 from pathlib import Path
 from db import KontextDB
 
-# File metadata fallback — primary source is file_meta table in database, this dict is the fallback
+# File metadata fallback — primary source is file_meta table in database, this dict is the fallback.
+# Sane defaults for common memory categories. Add your own by calling db.set_file_meta(...).
 _FILE_META = {
-    "user_identity.md": ("user", "Core bio — name, age, location, tech, business"),
-    "user_psychology.md": ("user", "How their mind works, patterns, trauma, coping"),
+    "user_identity.md": ("user", "Core bio — name, location, role"),
+    "user_psychology.md": ("user", "How the user thinks, patterns, coping"),
     "user_strengths.md": ("user", "Verified strengths and capabilities"),
     "user_blind_spots.md": ("user", "Patterns that cost time and quality"),
     "project_goals.md": ("project", "Active projects, statuses, benchmarks"),
-    "user_vocal_expertise.md": ("user", "Singing, teaching, method, curriculum"),
-    "project_vocality_brand.md": ("project", "Brand identity, aesthetic, messaging"),
-    "project_vocality_content.md": ("project", "Skool, YouTube, content pipeline"),
-    "user_financial_architecture.md": ("user", "Taxes, PFA, accounting, investments"),
-    "user_health_protocols.md": ("user", "Sleep, training, diet, skin, nervous system"),
-    "user_influences.md": ("user", "Mental models, copywriting, influences"),
-    "user_behavioral_intelligence.md": ("user", "Decision patterns, validation, drivers"),
-    "user_mother_situation.md": ("user", "No-contact, history, boundaries"),
-    "user_luiza_dynamic.md": ("user", "Relationship, attachment, friction"),
-    "user_peer_dynamic.md": ("user", "Friends, group dynamics"),
     "feedback_ai_interaction.md": ("feedback", "Communication rules, tone, protocols"),
     "design_principles.md": ("reference", "Build rules, patterns, feature ideas"),
-    "tool_registry.md": ("project", "All tools with version, location, status"),
-    "feedback_conflict_patterns.md": ("feedback", "Learned conflict resolution patterns"),
+    "tool_registry.md": ("project", "Tools with version, location, status"),
 }
 
 

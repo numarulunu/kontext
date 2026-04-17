@@ -12,10 +12,10 @@ from graph import extract_entities, build_graph, query_connections, prune_graph,
 @pytest.fixture
 def db(tmp_path):
     db = KontextDB(str(tmp_path / "test.db"))
-    db.add_entry(file="identity.md", fact="Name: Ionut Rosu. Location: Constanta, Romania.", source="[Claude 2026-04]", grade=10, tier="active")
-    db.add_entry(file="goals.md", fact="Migrating students from Preply to Stripe.", source="[Claude 2026-04]", grade=9, tier="active")
-    db.add_entry(file="financial.md", fact="PFA business under Sistem Real. Bank: Raiffeisen.", source="[Claude 2026-04]", grade=9, tier="active")
-    db.add_entry(file="tools.md", fact="Video Convertor built with Electron. Published on GitHub numarulunu/claude-convertor.", source="[Claude 2026-04]", grade=9, tier="active")
+    db.add_entry(file="identity.md", fact="Name: Alice Example. Location: Berlin, Germany.", source="[test]", grade=10, tier="active")
+    db.add_entry(file="goals.md", fact="Migrating students from Preply to Stripe.", source="[test]", grade=9, tier="active")
+    db.add_entry(file="financial.md", fact="Sole proprietor business. Bank: Raiffeisen.", source="[test]", grade=9, tier="active")
+    db.add_entry(file="tools.md", fact="Demo tool built with Electron. Published on GitHub example/demo-tool.", source="[test]", grade=9, tier="active")
     yield db
     db.close()
 
@@ -29,7 +29,7 @@ def test_extract_entities():
 def test_build_graph(db):
     count = build_graph(db)
     assert count > 0
-    rels = db.get_relations("Ionut")
+    rels = db.get_relations("Alice")
     assert len(rels) >= 0  # May or may not extract depending on NER
 
 
@@ -47,8 +47,8 @@ def test_extract_entities_filters_noise():
 
 
 def test_extract_entities_keeps_real_entities():
-    entities = extract_entities("Ionut uses Stripe and Preply for payments via Raiffeisen.")
-    assert "Ionut" in entities
+    entities = extract_entities("Alice uses Stripe and Preply for payments via Raiffeisen.")
+    assert "Alice" in entities
     assert "Stripe" in entities
     assert "Preply" in entities
     assert "Raiffeisen" in entities
@@ -56,7 +56,7 @@ def test_extract_entities_keeps_real_entities():
 
 def test_prune_low_quality_relations(db):
     db.add_entry(file="test.md", fact="The Air Module Fix was in Phase Two.", source="[test]", grade=8, tier="active")
-    db.add_entry(file="test.md", fact="Ionut uses Stripe.", source="[test]", grade=9, tier="active")
+    db.add_entry(file="test.md", fact="Alice uses Stripe.", source="[test]", grade=9, tier="active")
     build_graph(db)
     removed = prune_graph(db)
     assert removed > 0
@@ -65,7 +65,7 @@ def test_prune_low_quality_relations(db):
 
 
 def test_rebuild_graph(db):
-    db.add_entry(file="test.md", fact="Ionut uses Stripe for payments.", source="[test]", grade=9, tier="active")
+    db.add_entry(file="test.md", fact="Alice uses Stripe for payments.", source="[test]", grade=9, tier="active")
     count = rebuild_graph(db)
     assert count >= 0
     noise_rels = db.get_relations("Module")

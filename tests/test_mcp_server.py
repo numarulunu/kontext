@@ -15,7 +15,7 @@ def db(tmp_path):
     db_path = tmp_path / "test.db"
     db = KontextDB(str(db_path))
     db.add_entry(file="user_identity.md", fact="Name: Test User", source="[test]", grade=9, tier="active")
-    db.add_entry(file="user_identity.md", fact="Location: Constanta", source="[test]", grade=8, tier="active")
+    db.add_entry(file="user_identity.md", fact="Location: Berlin", source="[test]", grade=8, tier="active")
     db.add_entry(file="project_goals.md", fact="Launch Skool community", source="[test]", grade=7, tier="active")
     yield db
     db.close()

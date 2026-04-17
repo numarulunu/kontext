@@ -46,9 +46,9 @@ class TestWriteExportSyncCycle:
         from export import export_file, export_memory_index
 
         # Write entries
-        db.add_entry(file="user_identity.md", fact="Location: Constanta", source="[test]", grade=9, tier="active")
+        db.add_entry(file="user_identity.md", fact="Location: Berlin", source="[test]", grade=9, tier="active")
         db.add_entry(file="user_identity.md", fact="Role: Voice teacher", source="[test]", grade=8, tier="active")
-        db.add_entry(file="user_identity.md", fact="Old location: Bucharest", source="[test]", grade=6, tier="historical")
+        db.add_entry(file="user_identity.md", fact="Old location: Paris", source="[test]", grade=6, tier="historical")
 
         # Export
         content = export_file(db, "user_identity.md")
@@ -56,7 +56,7 @@ class TestWriteExportSyncCycle:
 
         # Verify
         text = (memory_dir / "user_identity.md").read_text(encoding="utf-8")
-        assert "Location: Constanta" in text
+        assert "Location: Berlin" in text
         assert "Voice teacher" in text
 
     def test_sync_reimports_manual_edits(self, db, memory_dir):

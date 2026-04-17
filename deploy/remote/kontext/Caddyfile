@@ -6,6 +6,11 @@
 {$KONTEXT_DOMAIN} {
     encode gzip zstd
 
+    # Dashboard is localhost-only. Reach it by SSH tunneling 8200 and
+    # browsing http://localhost:8200/dashboard — never publicly.
+    @dashboard path /dashboard /dashboard/*
+    respond @dashboard "dashboard is localhost-only" 403
+
     reverse_proxy kontext:8080 {
         header_up X-Forwarded-Proto {scheme}
         header_up X-Forwarded-Host {host}

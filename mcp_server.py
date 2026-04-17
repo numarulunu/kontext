@@ -329,7 +329,7 @@ _TOOL_DEFINITIONS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "entity": {"type": "string", "description": "Entity name to look up (e.g. Stripe, Luiza, Convertor)"},
+                "entity": {"type": "string", "description": "Entity name to look up (e.g. Stripe, a person, a tool)"},
                 "depth": {"type": "integer", "description": "How many hops to traverse (default 2)", "default": 2},
             },
             "required": ["entity"],

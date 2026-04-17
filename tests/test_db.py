@@ -105,7 +105,7 @@ class TestSchemaVersion:
 def test_add_entry(db):
     entry_id = db.add_entry(
         file="user_identity.md",
-        fact="Name: Ionut Rosu. Age: 26.",
+        fact="Name: Alice Example. Age: 26.",
         source="[Claude 2026-04]",
         grade=10,
         tier="active",
@@ -114,10 +114,10 @@ def test_add_entry(db):
 
 
 def test_no_duplicate_entry(db):
-    db.add_entry(file="user_identity.md", fact="Name: Ionut Rosu.", source="[Claude 2026-04]", grade=10, tier="active")
-    db.add_entry(file="user_identity.md", fact="Name: Ionut Rosu.", source="[Claude 2026-04]", grade=10, tier="active")
+    db.add_entry(file="user_identity.md", fact="Name: Alice Example.", source="[Claude 2026-04]", grade=10, tier="active")
+    db.add_entry(file="user_identity.md", fact="Name: Alice Example.", source="[Claude 2026-04]", grade=10, tier="active")
     entries = db.get_entries(file="user_identity.md")
-    assert len([e for e in entries if e["fact"] == "Name: Ionut Rosu."]) == 1
+    assert len([e for e in entries if e["fact"] == "Name: Alice Example."]) == 1
 
 
 def test_update_entry(db):
@@ -219,16 +219,16 @@ def test_recent_changes(db):
 # --- Knowledge graph (relations stored in db) ---
 
 def test_add_and_get_relations(db):
-    db.add_relation("Ionut", "uses", "Stripe", confidence=0.9, source="[Claude 2026-04]")
-    db.add_relation("Ionut", "teaches_at", "Preply", confidence=0.8, source="[Claude 2026-04]")
-    rels = db.get_relations("Ionut")
+    db.add_relation("Alice", "uses", "Stripe", confidence=0.9, source="[Claude 2026-04]")
+    db.add_relation("Alice", "teaches_at", "Preply", confidence=0.8, source="[Claude 2026-04]")
+    rels = db.get_relations("Alice")
     assert len(rels) == 2
 
 
 def test_query_graph(db):
-    db.add_relation("Ionut", "uses", "Stripe")
+    db.add_relation("Alice", "uses", "Stripe")
     db.add_relation("Stripe", "processes", "Payments")
-    results = db.query_graph("Ionut", depth=2)
+    results = db.query_graph("Alice", depth=2)
     entities_found = set()
     for r in results:
         entities_found.add(r["entity_a"])
@@ -267,8 +267,8 @@ def test_detect_conflict(db):
 
 
 def test_detect_conflict_no_false_positives(db):
-    db.add_entry(file="identity.md", fact="Name: Ionut Rosu", source="[Claude 2026-04]", grade=10, tier="active")
-    db.add_entry(file="identity.md", fact="Location: Constanta", source="[Claude 2026-04]", grade=9, tier="active")
+    db.add_entry(file="identity.md", fact="Name: Alice Example", source="[Claude 2026-04]", grade=10, tier="active")
+    db.add_entry(file="identity.md", fact="Location: Berlin", source="[Claude 2026-04]", grade=9, tier="active")
     conflicts = db.detect_conflicts(file="identity.md")
     assert len(conflicts) == 0
 

@@ -1090,7 +1090,7 @@ class KontextDB:
         # Stopwords + common entity nouns that shouldn't trigger on their own
         noise_words = {
             "the", "and", "for", "with", "from", "that", "this", "was", "are",
-            "has", "have", "been", "user", "ionut", "ionuÈ›", "claude", "vocality",
+            "has", "have", "been", "user", "claude",
             "this", "that", "with", "into", "over", "than", "then", "when", "what",
             "which", "they", "them", "their", "there", "would", "could", "should",
         }

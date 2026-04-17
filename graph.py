@@ -14,9 +14,9 @@ from db import KontextDB
 
 # Simple NER patterns for common entity types
 _PROPER_NOUN = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b")
-_TOOL_PATTERN = re.compile(r"\b(Convertor|Transcriptor|AutoPipeline|UsageBOT|pocketDEV|Kontext|Claude HUD|Claude Codex)\b")
+_TOOL_PATTERN = re.compile(r"\b(Kontext)\b")
 _PLATFORM_PATTERN = re.compile(r"\b(Preply|Stripe|GitHub|Skool|YouTube|Hetzner|Cloudflare|Revolut|Raiffeisen|ANAF|ElevenLabs|Freepik)\b")
-_PERSON_PATTERN = re.compile(r"\b(Ionut|Luiza|Vazquez|Lordu|Waru)\b")
+_PERSON_PATTERN = re.compile(r"(?!x)x")  # disabled by default — populate with user-specific names if needed
 
 # Minimum entity length — single/two-char matches are always noise
 _MIN_ENTITY_LENGTH = 3

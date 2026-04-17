@@ -26,7 +26,7 @@ def tmp_memory(tmp_path):
     (mem / "user_identity.md").write_text(
         "---\nname: Identity\ndescription: Core bio\ntype: user\n---\n\n"
         "## Active (Grade 8-10)\n\n"
-        "[Claude 2026-04] Name: Ionut Rosu. Age: 26. Grade: 10\n"
+        "[Claude 2026-04] Name: Alice Example. Age: 26. Grade: 10\n"
         "[Claude 2026-04] Gaming PC: Windows 11, GTX 1080 Ti. Grade: 8\n\n"
         "## Historical (Grade 5-7)\n\n"
         "[Gemini 2025] Was in Dubai at some point. Grade: 5\n"
@@ -45,7 +45,7 @@ def tmp_memory(tmp_path):
 def test_parse_memory_file(tmp_memory):
     entries = parse_memory_file(tmp_memory / "user_identity.md")
     assert len(entries) == 3
-    assert entries[0]["fact"] == "Name: Ionut Rosu. Age: 26."
+    assert entries[0]["fact"] == "Name: Alice Example. Age: 26."
     assert entries[0]["grade"] == 10
     assert entries[0]["tier"] == "active"
     assert entries[0]["source"] == "[Claude 2026-04]"
