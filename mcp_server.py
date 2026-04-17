@@ -318,7 +318,7 @@ _TOOL_DEFINITIONS = [
                 "tier": {"type": "string", "description": "Filter by tier: active, historical, or cold"},
                 "min_grade": {"type": "number", "description": "Minimum grade to include"},
                 "search": {"type": "string", "description": "Full-text search on fact content"},
-                "semantic": {"type": "boolean", "description": "Use embedding-based semantic search on entry facts (requires sentence-transformers; falls back to keyword search if unavailable)", "default": False},
+                "semantic": {"type": "boolean", "description": "Use embedding-based semantic search fused with FTS5 via reciprocal-rank fusion (default: true; set false to force keyword-only). Falls back to keyword search if sentence-transformers is unavailable.", "default": True},
                 "top_k": {"type": "integer", "description": "Max results when semantic=true (default 10)", "default": 10},
             },
         },
@@ -670,35 +670,43 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                 db = _get_db()
                 search_text = args.get("search", "")
 
-                semantic = bool(args.get("semantic", False))
+                semantic = bool(args.get("semantic", True))
                 top_k = max(1, min(int(args.get("top_k", 10) or 10), 100))
                 fallback_note = ""
 
                 if search_text and semantic:
-                    # Embedding-based search over entry facts. Falls back to
-                    # keyword search if sentence-transformers isn't installed.
+                    # Run FTS5 and semantic in parallel, then reciprocal-rank fuse.
+                    # FTS5 wins on exact terms, semantic wins on paraphrase.
+                    # Pull a wider window per retriever (top_k * 3) so the fused
+                    # top-k has enough distinct candidates to choose from.
+                    retriever_limit = max(top_k * 3, 20)
+                    fts_results = db.search_entries(
+                        search_text,
+                        limit=retriever_limit,
+                        file=args.get("file"),
+                        tier=args.get("tier"),
+                        min_grade=args.get("min_grade"),
+                    )
+                    sem_results: list = []
                     try:
+                        from retrieval import rrf_merge
                         model = get_model()
                         vec = model.encode(search_text)
                         if hasattr(vec, "tolist"):
                             vec = vec.tolist()
-                        qresults = db.semantic_search(
+                        sem_results = db.semantic_search(
                             list(vec),
-                            limit=top_k,
+                            limit=retriever_limit,
                             min_grade=float(args.get("min_grade") or 0),
                             file=args.get("file"),
                         )
                         if args.get("tier"):
-                            qresults = [r for r in qresults if r.get("tier") == args["tier"]]
+                            sem_results = [r for r in sem_results if r.get("tier") == args["tier"]]
+                        qresults = rrf_merge(fts_results, sem_results)[:top_k]
                     except Exception as e:
                         _logger.warning(f"SEMANTIC FALLBACK: {type(e).__name__}: {e}")
                         fallback_note = " (semantic unavailable - using keyword search)"
-                        qresults = db.search_entries(
-                            search_text,
-                            file=args.get("file"),
-                            tier=args.get("tier"),
-                            min_grade=args.get("min_grade"),
-                        )
+                        qresults = fts_results[:top_k]
                 elif search_text:
                     # Forward file/tier/min_grade filters to search_entries so they
                     # aren't silently dropped when 'search' is supplied.

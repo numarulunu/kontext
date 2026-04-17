@@ -9,8 +9,9 @@ writes, no embedding index rebuild. Semantic mode reuses the cached
 embeddings already in `entries.embedding`.
 
 Usage:
-    python -m eval_retrieval                                  # semantic=True, default out path
-    python -m eval_retrieval --semantic=false                 # FTS5 only
+    python -m eval_retrieval                                  # mode=rrf (production default)
+    python -m eval_retrieval --mode=fts5                      # keyword only
+    python -m eval_retrieval --mode=semantic                  # embedding only
     python -m eval_retrieval --out docs/eval-baselines/x.csv  # explicit out
     python -m eval_retrieval --top-k 10                       # expand retrieval window
     python -m eval_retrieval --queries eval_retrieval.yaml    # explicit query file
@@ -151,17 +152,22 @@ def _rank_files(entries: list[dict]) -> list[str]:
     return seen
 
 
-def run_query(db, query: str, semantic: bool, top_k: int, model) -> tuple[list[str], int]:
+def run_query(db, query: str, mode: str, top_k: int, model) -> tuple[list[str], int]:
     """Execute one query. Returns (ranked_files, latency_ms).
 
-    Mirrors mcp_server.py's kontext_query flow: semantic when flagged + model
-    available, else FTS5 via search_entries. Pull a wider entry window
-    (top_k * 5) so the file-level top-k has enough distinct candidates.
+    Mirrors mcp_server.py's kontext_query flow:
+      - mode="fts5":     keyword only (db.search_entries)
+      - mode="semantic": embedding only (db.semantic_search)
+      - mode="rrf":      run both and reciprocal-rank fuse (production default after B2+B3)
+    Pull a wider entry window (top_k * 5) so the file-level top-k has enough
+    distinct candidates.
     """
     entry_limit = max(top_k * 5, 20)
     t0 = time.perf_counter()
 
-    if semantic and model is not None:
+    if mode == "fts5" or model is None:
+        entries = db.search_entries(query, limit=entry_limit)
+    elif mode == "semantic":
         try:
             vec = model.encode(query)
             if hasattr(vec, "tolist"):
@@ -170,8 +176,20 @@ def run_query(db, query: str, semantic: bool, top_k: int, model) -> tuple[list[s
         except Exception as e:
             _log.warning(f"SEMANTIC_FALLBACK query={query!r} err={type(e).__name__}: {e}")
             entries = db.search_entries(query, limit=entry_limit)
+    elif mode == "rrf":
+        from retrieval import rrf_merge
+        fts_results = db.search_entries(query, limit=entry_limit)
+        try:
+            vec = model.encode(query)
+            if hasattr(vec, "tolist"):
+                vec = vec.tolist()
+            sem_results = db.semantic_search(list(vec), limit=entry_limit)
+            entries = rrf_merge(fts_results, sem_results)
+        except Exception as e:
+            _log.warning(f"SEMANTIC_FALLBACK query={query!r} err={type(e).__name__}: {e}")
+            entries = fts_results
     else:
-        entries = db.search_entries(query, limit=entry_limit)
+        raise ValueError(f"unknown mode: {mode!r}")
 
     latency_ms = int((time.perf_counter() - t0) * 1000)
     return _rank_files(entries), latency_ms
@@ -247,8 +265,8 @@ def main() -> int:
         description="Evaluate Kontext retrieval quality (recall@3, recall@5, MRR).",
     )
     parser.add_argument(
-        "--semantic", default="true", choices=["true", "false"],
-        help="Use semantic (embedding) search. Default: true.",
+        "--mode", default="rrf", choices=["fts5", "semantic", "rrf"],
+        help="Retrieval mode: fts5 (keyword), semantic (embedding), rrf (fused). Default: rrf.",
     )
     parser.add_argument(
         "--top-k", type=int, default=5,
@@ -268,15 +286,14 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    semantic = args.semantic.lower() == "true"
+    mode = args.mode
 
     # Prepare output path
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     if args.out:
         out_path = Path(args.out).expanduser()
     else:
-        mode_tag = "sem" if semantic else "fts5"
-        out_path = DEFAULT_OUT_DIR / f"eval_results_{mode_tag}_{ts}.csv"
+        out_path = DEFAULT_OUT_DIR / f"eval_results_{mode}_{ts}.csv"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Load queries
@@ -287,7 +304,7 @@ def main() -> int:
         _log.error(f"QUERIES_LOAD_FAIL: {e}")
         return 1
 
-    _log.info(f"START semantic={semantic} top_k={args.top_k} queries={len(queries)} out={out_path}")
+    _log.info(f"START mode={mode} top_k={args.top_k} queries={len(queries)} out={out_path}")
 
     # Connect DB + optionally load model
     if args.db:
@@ -301,23 +318,23 @@ def main() -> int:
         return 2
 
     model = None
-    if semantic:
+    if mode in ("semantic", "rrf"):
         try:
             from sentence_transformers import SentenceTransformer
             model = SentenceTransformer("all-MiniLM-L6-v2")
         except Exception as e:
             print(
-                f"WARNING: semantic requested but sentence-transformers unavailable "
+                f"WARNING: {mode} requested but sentence-transformers unavailable "
                 f"({type(e).__name__}: {e}). Falling back to FTS5 for all queries.",
                 file=sys.stderr,
             )
             _log.warning(f"MODEL_LOAD_FAIL: {e}")
-            semantic = False
+            mode = "fts5"
 
     # Run queries
     rows: list[dict] = []
     for i, q in enumerate(queries, start=1):
-        ranked, latency_ms = run_query(db, q["query"], semantic, args.top_k, model)
+        ranked, latency_ms = run_query(db, q["query"], mode, args.top_k, model)
         r3 = recall_at_k(q["expected_files"], ranked, 3)
         r5 = recall_at_k(q["expected_files"], ranked, 5)
         m = mrr(q["expected_files"], ranked)
