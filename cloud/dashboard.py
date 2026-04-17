@@ -64,11 +64,34 @@ def _localtime(ts, fmt: str = "%Y-%m-%d %H:%M") -> str:
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates" / "dashboard"
 
 
+LOCAL_WORKSPACE_ID = "local"
+
+
 def _resolve_workspace(db) -> str:
+    """Return the workspace the dashboard should render for.
+
+    Preference order: any cloud-linked workspace > a synthetic "local" workspace.
+    If neither exists, auto-create the local workspace so the dashboard works
+    out of the box on a fresh install with no cloud sync configured.
+    """
     row = db.conn.execute(
-        "SELECT id FROM workspaces ORDER BY created_at ASC LIMIT 1"
+        "SELECT id FROM workspaces "
+        "WHERE id != ? ORDER BY created_at ASC LIMIT 1",
+        (LOCAL_WORKSPACE_ID,),
     ).fetchone()
-    return row["id"] if row else ""
+    if row:
+        return row["id"]
+    existing_local = db.conn.execute(
+        "SELECT id FROM workspaces WHERE id = ?", (LOCAL_WORKSPACE_ID,),
+    ).fetchone()
+    if existing_local:
+        return existing_local["id"]
+    db.create_workspace(
+        workspace_id=LOCAL_WORKSPACE_ID,
+        name="Local",
+        recovery_key_id="local",
+    )
+    return LOCAL_WORKSPACE_ID
 
 
 SCORE_TARGETS = {

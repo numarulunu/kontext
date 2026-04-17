@@ -42,6 +42,29 @@ def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+def test_dashboard_auto_creates_local_workspace_on_empty_db(client, db):
+    """On a fresh DB with no cloud workspace, the dashboard should still
+    render by creating a synthetic 'local' workspace on first hit."""
+    assert db.conn.execute("SELECT count(*) AS n FROM workspaces").fetchone()["n"] == 0
+
+    response = client.get("/dashboard")
+    assert response.status_code == 200
+
+    row = db.conn.execute("SELECT id, name FROM workspaces").fetchone()
+    assert row["id"] == "local"
+    assert row["name"] == "Local"
+
+
+def test_dashboard_prefers_cloud_workspace_over_local(client, db):
+    """If both a cloud workspace and the local one exist, resolve picks cloud."""
+    _create_workspace(client)  # creates ws-1
+    db.create_workspace(workspace_id="local", name="Local", recovery_key_id="local")
+
+    response = client.get("/dashboard")
+    assert response.status_code == 200
+    assert b"ws-1" in response.content or b"Primary" in response.content
+
+
 def test_create_workspace_endpoint_persists_row(client, db):
     _create_workspace(client)
 

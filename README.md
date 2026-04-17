@@ -451,12 +451,32 @@ kontext/
 
 <br>
 
+## The Dashboard
+
+Kontext ships with a small web dashboard — overview score, entries browser,
+devices, sync ops. Works **locally out of the box**:
+
+```bash
+python -m cloud.server
+# then open http://localhost:8080/dashboard in your browser
+```
+
+It binds to `127.0.0.1` only, reads your local `kontext.db`, and auto-creates
+a "local" workspace on first hit so every view renders. No cloud setup
+required.
+
+<br>
+
+---
+
+<br>
+
 ## Optional: Multi-device Sync
 
 **Kontext runs fully local by default.** SQLite, semantic search, knowledge
-graph, dream, digest — all work offline with no cloud anywhere. You only need
-the section below if you want your memory to follow you across multiple
-devices (laptop + desktop, etc.).
+graph, dream, digest, and the dashboard all work offline with no cloud
+anywhere. You only need the section below if you want your memory to follow
+you across multiple devices (laptop + desktop, etc.).
 
 If you never link a cloud, `sync.py` logs a one-line warning and everything
 else keeps working. No account, no signup, no VPS required.

@@ -148,15 +148,16 @@ def test_cloud_recover_reports_replayed_count(memory_dir, entries):
 def test_sync_runs_cloud_pull_before_file_import(db, memory_dir):
     order = []
 
-    def fake_cloud_pull(db_obj):
+    def fake_sync_once(db_obj):
         order.append(('pull', db_obj.db_path))
-        return 2
+        return {'history_pulled': 2, 'canonical_pulled': 0,
+                'history_pushed': 0, 'canonical_pushed': 0}
 
     def fake_parse_memory_file(_path):
         order.append(('parse', None))
         return []
 
-    with patch('cloud.daemon.cloud_pull_once', side_effect=fake_cloud_pull):
+    with patch('cloud.daemon.sync_once', side_effect=fake_sync_once):
         with patch('migrate.parse_memory_file', side_effect=fake_parse_memory_file):
             with patch('sync._run_decay', return_value=0):
                 with patch('sync._maybe_dream', return_value=0):
@@ -170,12 +171,12 @@ def test_sync_runs_cloud_pull_before_file_import(db, memory_dir):
 
 
 def test_sync_dry_run_skips_cloud_pull(db, memory_dir):
-    with patch('cloud.daemon.cloud_pull_once') as mock_pull:
+    with patch('cloud.daemon.sync_once') as mock_sync:
         with patch('sync._run_decay', return_value=0):
             with patch('sync._maybe_dream', return_value=0):
                 from sync import sync
 
                 result = sync(memory_dir=memory_dir, dry_run=True, db=db)
 
-    mock_pull.assert_not_called()
+    mock_sync.assert_not_called()
     assert result['cloud_pulled'] == 0
