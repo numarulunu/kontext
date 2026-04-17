@@ -8,6 +8,7 @@ Flat markdown files are generated FROM this database, not the other way around.
 
 import json
 import os
+import re
 import hashlib
 import sqlite3
 import uuid
@@ -16,6 +17,31 @@ from collections import deque
 from pathlib import Path
 import struct
 import shutil
+
+# Minimal English stopword list for FTS5 query tokenization. Kept tight —
+# over-filtering hurts short queries like "who is X". Only remove words that
+# appear in almost every natural-language question and carry no signal.
+_FTS_STOPWORDS = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "do", "does", "did", "have", "has", "had",
+    "i", "me", "my", "mine", "you", "your", "we", "our", "it", "its",
+    "and", "or", "but", "if", "so",
+    "of", "to", "in", "on", "for", "at", "by", "with", "from", "as",
+    "what", "who", "when", "where", "why", "how", "which",
+    "this", "that", "these", "those",
+    "s", "t", "m", "re", "ve", "ll", "d",  # leftover from contraction splits
+})
+
+
+def _tokenize_fts_query(query: str) -> list[str]:
+    """Extract FTS5-usable tokens from a natural-language query.
+
+    Splits on non-word chars, drops tokens <2 chars, strips stopwords.
+    Preserves the original if no usable tokens remain so exact-phrase
+    matches (e.g. "GTX 1080") still work via the phrase fallback.
+    """
+    raw = re.findall(r"[A-Za-z0-9_]+", query)
+    return [t for t in raw if len(t) >= 2 and t.lower() not in _FTS_STOPWORDS]
 
 
 def _default_db_path() -> str:
@@ -724,31 +750,47 @@ class KontextDB:
         of 3+ chars), falling back to escaped LIKE on older SQLite builds.
         """
         if self._fts_enabled and query and query.strip():
-            # Wrap as a quoted phrase so FTS5 operators (", *, :, (, ), -, AND, OR)
-            # in user input are treated as literal trigrams. Escape embedded
-            # quotes by doubling them per FTS5 syntax.
-            phrase = '"' + query.replace('"', '""') + '"'
-            sql = (
+            # Build a tokenized OR query first so natural-language questions
+            # like "What's my PFA tax regime?" match any entry containing
+            # "PFA", "tax", or "regime" (ranked by grade). Fall back to the
+            # full quoted phrase if tokenization produces nothing useful, so
+            # exact multi-word matches ("GTX 1080") still work.
+            tokens = _tokenize_fts_query(query)
+            candidate_match_clauses: list[str] = []
+            if tokens:
+                candidate_match_clauses.append(
+                    " OR ".join('"' + t.replace('"', '""') + '"' for t in tokens)
+                )
+            # Always include the literal phrase as a second attempt.
+            candidate_match_clauses.append('"' + query.replace('"', '""') + '"')
+
+            base_sql = (
                 "SELECT e.* FROM entries e "
                 "JOIN entries_fts f ON e.id = f.rowid "
                 "WHERE f.fact MATCH ?"
             )
-            params: list = [phrase]
+            suffix = ""
+            extra_params: list = []
             if file:
-                sql += " AND e.file = ?"
-                params.append(file)
+                suffix += " AND e.file = ?"
+                extra_params.append(file)
             if tier:
-                sql += " AND e.tier = ?"
-                params.append(tier)
+                suffix += " AND e.tier = ?"
+                extra_params.append(tier)
             if min_grade is not None:
-                sql += " AND e.grade >= ?"
-                params.append(min_grade)
-            sql += " ORDER BY e.grade DESC LIMIT ?"
-            params.append(limit)
-            try:
-                return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
-            except sqlite3.OperationalError:
-                pass  # Trigram <3 chars or other FTS edge case â†’ fall through to LIKE
+                suffix += " AND e.grade >= ?"
+                extra_params.append(min_grade)
+            suffix += " ORDER BY e.grade DESC LIMIT ?"
+
+            for match_clause in candidate_match_clauses:
+                params: list = [match_clause] + extra_params + [limit]
+                try:
+                    rows = self.conn.execute(base_sql + suffix, params).fetchall()
+                except sqlite3.OperationalError:
+                    continue  # Trigram <3 chars or FTS syntax edge â†’ try next clause
+                if rows:
+                    return [dict(r) for r in rows]
+            # All FTS attempts returned empty or errored â†’ fall through to LIKE
 
         safe_query = _escape_like(query)
         sql = "SELECT * FROM entries WHERE fact LIKE ? ESCAPE '\\'"
