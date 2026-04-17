@@ -15,6 +15,7 @@
           <th class="text-left font-normal px-4 py-3">Class</th>
           <th class="text-left font-normal px-4 py-3">Device id</th>
           <th class="text-left font-normal px-4 py-3">Enrolled</th>
+          <th class="text-left font-normal px-4 py-3">Last active</th>
           <th class="text-left font-normal px-4 py-3">Status</th>
           <th class="text-right font-normal px-4 py-3">Actions</th>
         </tr>
@@ -26,6 +27,7 @@
           <td class="px-4 py-3 dim">{{ d.device_class }}</td>
           <td class="px-4 py-3 mono text-xs">{{ d.id }}</td>
           <td class="px-4 py-3 mono text-xs dim" title="{{ d.enrolled_at }}">{{ d.enrolled_at | localtime('%Y-%m-%d %H:%M') }}</td>
+          <td class="px-4 py-3 mono text-xs dim" title="{{ d.last_op_at or '' }}">{{ d.last_op_at | reltime }}</td>
           <td class="px-4 py-3">
             {% if d.revoked_at %}
               <span class="text-xs text-red-400">revoked</span>
@@ -50,7 +52,7 @@
           </td>
         </tr>
         {% else %}
-        <tr><td class="px-4 py-6 dim text-center" colspan="6">No devices enrolled.</td></tr>
+        <tr><td class="px-4 py-6 dim text-center" colspan="7">No devices enrolled.</td></tr>
         {% endfor %}
       </tbody>
     </table>

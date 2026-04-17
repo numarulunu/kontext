@@ -344,9 +344,13 @@ def _build_router(db_path: str) -> APIRouter:
             workspace_id = _resolve_workspace(req_db)
             rows = req_db.conn.execute(
                 """
-                SELECT id, label, device_class, enrolled_at, revoked_at
-                FROM devices WHERE workspace_id = ?
-                ORDER BY enrolled_at ASC
+                SELECT d.id, d.label, d.device_class, d.enrolled_at, d.revoked_at,
+                       (SELECT max(created_at) FROM history_ops h
+                         WHERE h.workspace_id = d.workspace_id
+                           AND h.device_id = d.id) AS last_op_at
+                FROM devices d
+                WHERE d.workspace_id = ?
+                ORDER BY d.enrolled_at ASC
                 """,
                 (workspace_id,),
             ).fetchall()
