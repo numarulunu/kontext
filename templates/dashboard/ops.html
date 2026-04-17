@@ -21,7 +21,7 @@
       <tbody>
         {% for o in ops %}
         <tr class="border-t hairline">
-          <td class="px-4 py-2 mono text-xs dim whitespace-nowrap">{{ o.created_at }}</td>
+          <td class="px-4 py-2 mono text-xs dim whitespace-nowrap" title="{{ o.created_at }}">{{ o.created_at | reltime }}</td>
           <td class="px-4 py-2">{{ o.op_kind }}</td>
           <td class="px-4 py-2 mono text-xs"><span class="dim">{{ o.entity_type }}</span>:{{ o.entity_id }}</td>
           <td class="px-4 py-2">{{ o.device_label or '—' }}</td>

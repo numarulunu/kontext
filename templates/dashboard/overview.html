@@ -17,7 +17,7 @@
         </div>
         <div class="mt-2 mono text-lg">{{ score.level }}</div>
         <div class="mt-4 text-xs dim">
-          known since <span class="mono text-neutral-400">{{ score.known_since or '—' }}</span>
+          known since <span class="mono text-neutral-400" title="{{ score.known_since or '' }}">{{ score.known_since | localtime('%Y-%m-%d') }}</span>
           <br/>
           <span class="mono text-neutral-400">{{ score.age_days }}</span> day{{ '' if score.age_days == 1 else 's' }}
         </div>
@@ -71,7 +71,7 @@
     </div>
     <div class="border hairline rounded p-5">
       <div class="text-xs uppercase tracking-widest dim mb-2">Last capture</div>
-      <div class="text-sm mono truncate">{{ activity.last_capture_at or '—' }}</div>
+      <div class="text-sm mono truncate" title="{{ activity.last_capture_at or '' }}">{{ activity.last_capture_at | reltime }}</div>
       <div class="text-xs dim mt-1">any table</div>
     </div>
   </div>
@@ -118,7 +118,7 @@
     <div class="border hairline rounded p-5">
       <div class="text-xs uppercase tracking-widest dim mb-4">Activity</div>
       <div class="text-sm">
-        <div class="flex justify-between mb-2"><span class="dim">Last op</span><span class="mono text-xs">{{ last_op_at or '—' }}</span></div>
+        <div class="flex justify-between mb-2"><span class="dim">Last op</span><span class="mono text-xs" title="{{ last_op_at or '' }}">{{ last_op_at | reltime }}</span></div>
       </div>
       <div class="mt-6 text-xs dim">
         <a class="underline underline-offset-4" href="/dashboard/entries">→ browse entries</a> ·

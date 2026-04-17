@@ -7,6 +7,7 @@ library is being written sensibly.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -14,6 +15,50 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from db import KontextDB
+
+
+def _parse_utc(ts) -> datetime | None:
+    """Parse a stored SQLite/ISO timestamp as UTC-aware."""
+    if not ts:
+        return None
+    s = str(ts).strip()
+    if not s:
+        return None
+    if s.endswith("Z"):
+        s = s[:-1]
+    s = s.replace("T", " ")
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def _reltime(ts) -> str:
+    dt = _parse_utc(ts)
+    if not dt:
+        return "—"
+    now = datetime.now(timezone.utc)
+    s = int((now - dt).total_seconds())
+    if s < 0:
+        return dt.astimezone().strftime("%b %d %H:%M")
+    if s < 60:
+        return "just now"
+    if s < 3600:
+        return f"{s // 60}m ago"
+    if s < 86400:
+        return f"{s // 3600}h ago"
+    if s < 86400 * 30:
+        return f"{s // 86400}d ago"
+    return dt.astimezone().strftime("%b %d %Y")
+
+
+def _localtime(ts, fmt: str = "%Y-%m-%d %H:%M") -> str:
+    dt = _parse_utc(ts)
+    if not dt:
+        return "—"
+    return dt.astimezone().strftime(fmt)
 
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates" / "dashboard"
@@ -167,6 +212,8 @@ def register_dashboard(app, db_path: str) -> None:
 
 def _build_router(db_path: str) -> APIRouter:
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+    templates.env.filters["reltime"] = _reltime
+    templates.env.filters["localtime"] = _localtime
     router = APIRouter()
 
     @router.get("/dashboard", response_class=HTMLResponse)

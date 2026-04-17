@@ -43,7 +43,7 @@
       <div class="border hairline rounded p-4">
         <div class="flex items-baseline justify-between mb-2 text-xs">
           <span class="mono dim">{{ e.file }}</span>
-          <span class="mono dim">#{{ e.id }} · tier:{{ e.tier }} · grade:{{ '%.1f' % e.grade }} · {{ e.updated_at }}</span>
+          <span class="mono dim" title="{{ e.updated_at }}">#{{ e.id }} · tier:{{ e.tier }} · grade:{{ '%.1f' % e.grade }} · {{ e.updated_at | reltime }}</span>
         </div>
         <div class="text-sm whitespace-pre-wrap">{{ e.fact }}</div>
         {% if e.source %}
