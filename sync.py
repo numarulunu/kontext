@@ -104,13 +104,17 @@ def sync(memory_dir: Path = None, dry_run: bool = False, db=None) -> dict:
         cloud_pulled = 0
     else:
         try:
-            from cloud.daemon import cloud_pull_once
-            cloud_pulled = cloud_pull_once(db)
-            if cloud_pulled > 0:
-                log.info(f"SYNC: replayed {cloud_pulled} cloud history ops before file import")
+            from cloud.daemon import sync_once
+            result = sync_once(db)
+            cloud_pulled = result.get("history_pulled", 0) + result.get("canonical_pulled", 0)
+            pushed = result.get("history_pushed", 0) + result.get("canonical_pushed", 0)
+            if pushed or cloud_pulled:
+                log.info(
+                    f"SYNC: pushed {pushed} / pulled {cloud_pulled} cloud ops"
+                )
         except Exception as e:
             cloud_pulled = 0
-            log.warning(f"SYNC: cloud pull skipped — {e}")
+            log.warning(f"SYNC: cloud sync skipped — {e}")
 
     synced = 0
     skipped = 0
