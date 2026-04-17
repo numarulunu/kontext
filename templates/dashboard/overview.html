@@ -28,7 +28,7 @@
           {% set dim_labels = {
             'breadth': ('Breadth', score.distinct_files ~ ' files'),
             'depth':   ('Depth',   entries_count ~ ' entries'),
-            'recency': ('Recency', score.recent_30d ~ ' in 30d'),
+            'recency': ('Recency', score.active_days_30d ~ '/30 active days'),
             'longevity': ('Longevity', score.age_days ~ ' d'),
             'linkage': ('Linkage', score.relation_count ~ ' relations'),
           } %}
@@ -50,6 +50,29 @@
           {{ score.nudge }}
         </div>
       </div>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-4 gap-4 mb-4">
+    <div class="border hairline rounded p-5">
+      <div class="text-xs uppercase tracking-widest dim mb-2">Tool events · 24h</div>
+      <div class="text-3xl mono">{{ activity.tool_today }}</div>
+      <div class="text-xs dim mt-1">{{ activity.tool_total }} total</div>
+    </div>
+    <div class="border hairline rounded p-5">
+      <div class="text-xs uppercase tracking-widest dim mb-2">Prompts · 24h</div>
+      <div class="text-3xl mono">{{ activity.prompt_today }}</div>
+      <div class="text-xs dim mt-1">{{ activity.prompt_total }} total</div>
+    </div>
+    <div class="border hairline rounded p-5">
+      <div class="text-xs uppercase tracking-widest dim mb-2">Entries · 24h</div>
+      <div class="text-3xl mono">{{ activity.entry_today }}</div>
+      <div class="text-xs dim mt-1">{{ entries_count }} total</div>
+    </div>
+    <div class="border hairline rounded p-5">
+      <div class="text-xs uppercase tracking-widest dim mb-2">Last capture</div>
+      <div class="text-sm mono truncate">{{ activity.last_capture_at or '—' }}</div>
+      <div class="text-xs dim mt-1">any table</div>
     </div>
   </div>
 

@@ -27,11 +27,11 @@ def _resolve_workspace(db) -> str:
 
 
 SCORE_TARGETS = {
-    "breadth_files": 20,      # distinct library files
-    "depth_entries": 2000,    # total entries
-    "recency_days": 30,       # active window
-    "longevity_days": 365,    # 1 year = maxed
-    "linkage_ratio": 1.0,     # 1 relation per entry
+    "breadth_files": 20,         # distinct library files
+    "depth_entries": 2000,       # total entries
+    "recency_active_days": 30,   # active days (tool_events+prompts) in last 30
+    "longevity_days": 365,       # 1 year = maxed
+    "linkage_ratio": 1.0,        # 1 relation per entry
 }
 
 SCORE_WEIGHTS = {
@@ -53,7 +53,7 @@ LEVELS = [
 NUDGES = {
     "breadth": "Write about more topics — hit library files you haven't touched.",
     "depth": "Feed more chats, notes, or transcripts to grow raw entry count.",
-    "recency": "Recent activity is thin — talk to Claude, capture will follow.",
+    "recency": "Quiet stretch — code, chat, or capture to bump active-day count.",
     "longevity": "This one just takes time. It grows on its own.",
     "linkage": "Relations are sparse — run /kontext brainstorm to link entities.",
 }
@@ -70,9 +70,6 @@ def _level_for(score: int) -> str:
 def _compute_score(conn) -> dict:
     total = conn.execute("SELECT count(*) AS n FROM entries").fetchone()["n"] or 0
     distinct_files = conn.execute("SELECT count(DISTINCT file) AS n FROM entries").fetchone()["n"] or 0
-    recent = conn.execute(
-        "SELECT count(*) AS n FROM entries WHERE updated_at > datetime('now', '-30 days')"
-    ).fetchone()["n"] or 0
     first_row = conn.execute("SELECT min(created_at) AS first FROM entries").fetchone()
     first_at = first_row["first"] if first_row else None
     age_row = conn.execute(
@@ -81,9 +78,24 @@ def _compute_score(conn) -> dict:
     age_days = age_row["d"] if age_row and age_row["d"] is not None else 0
     relation_count = conn.execute("SELECT count(*) AS n FROM relations").fetchone()["n"] or 0
 
+    # Recency = distinct days with ANY activity (tool_events or user_prompts)
+    # in the last 30 days. This reflects coding/chat engagement, not just
+    # memory writes — tool_events + prompts are the raw capture streams.
+    active_days = conn.execute(
+        """
+        SELECT count(*) AS n FROM (
+            SELECT substr(created_at, 1, 10) AS day FROM tool_events
+             WHERE created_at > datetime('now', '-30 days')
+            UNION
+            SELECT substr(created_at, 1, 10) AS day FROM user_prompts
+             WHERE created_at > datetime('now', '-30 days')
+        )
+        """
+    ).fetchone()["n"] or 0
+
     breadth = min(distinct_files / SCORE_TARGETS["breadth_files"], 1.0)
     depth = min(total / SCORE_TARGETS["depth_entries"], 1.0)
-    recency = (recent / total) if total > 0 else 0.0
+    recency = min(active_days / SCORE_TARGETS["recency_active_days"], 1.0)
     longevity = min(age_days / SCORE_TARGETS["longevity_days"], 1.0)
     linkage = min((relation_count / total) if total > 0 else 0.0, SCORE_TARGETS["linkage_ratio"])
 
@@ -105,9 +117,46 @@ def _compute_score(conn) -> dict:
         "age_days": age_days,
         "distinct_files": distinct_files,
         "relation_count": relation_count,
-        "recent_30d": recent,
+        "active_days_30d": active_days,
         "weakest": weakest,
         "nudge": NUDGES[weakest],
+    }
+
+
+def _compute_activity(conn) -> dict:
+    """Activity stats — what's been captured today and recently."""
+    tool_today = conn.execute(
+        "SELECT count(*) AS n FROM tool_events "
+        "WHERE created_at > datetime('now', '-1 day')"
+    ).fetchone()["n"] or 0
+    prompt_today = conn.execute(
+        "SELECT count(*) AS n FROM user_prompts "
+        "WHERE created_at > datetime('now', '-1 day')"
+    ).fetchone()["n"] or 0
+    entry_today = conn.execute(
+        "SELECT count(*) AS n FROM entries "
+        "WHERE created_at > datetime('now', '-1 day')"
+    ).fetchone()["n"] or 0
+    tool_total = conn.execute("SELECT count(*) AS n FROM tool_events").fetchone()["n"] or 0
+    prompt_total = conn.execute("SELECT count(*) AS n FROM user_prompts").fetchone()["n"] or 0
+    last_capture_at = conn.execute(
+        """
+        SELECT max(ts) AS t FROM (
+            SELECT max(created_at) AS ts FROM tool_events
+            UNION ALL
+            SELECT max(created_at) AS ts FROM user_prompts
+            UNION ALL
+            SELECT max(updated_at) AS ts FROM entries
+        )
+        """
+    ).fetchone()["t"]
+    return {
+        "tool_today": tool_today,
+        "prompt_today": prompt_today,
+        "entry_today": entry_today,
+        "tool_total": tool_total,
+        "prompt_total": prompt_total,
+        "last_capture_at": last_capture_at,
     }
 
 
@@ -161,6 +210,7 @@ def _build_router(db_path: str) -> APIRouter:
                 "SELECT tier, count(*) AS n FROM entries GROUP BY tier"
             ).fetchall()
             score = _compute_score(conn)
+            activity = _compute_activity(conn)
         active_devices = [d for d in devices if d["revoked_at"] is None]
         return templates.TemplateResponse(
             request,
@@ -176,6 +226,7 @@ def _build_router(db_path: str) -> APIRouter:
                 "per_file": [dict(r) for r in per_file],
                 "tier_dist": {r["tier"]: r["n"] for r in tier_dist},
                 "score": score,
+                "activity": activity,
                 "nav_active": "overview",
             },
         )
