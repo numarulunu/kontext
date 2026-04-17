@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Ops · Kontext{% endblock %}
+{% block content %}
+<div class="max-w-6xl">
+  <div class="flex items-baseline justify-between mb-10">
+    <h1 class="text-2xl">Recent ops</h1>
+    <div class="mono text-xs dim">latest {{ ops | length }}</div>
+  </div>
+
+  <div class="border hairline rounded overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-neutral-900/40 text-xs uppercase tracking-widest dim">
+        <tr>
+          <th class="text-left font-normal px-4 py-3">Created</th>
+          <th class="text-left font-normal px-4 py-3">Kind</th>
+          <th class="text-left font-normal px-4 py-3">Entity</th>
+          <th class="text-left font-normal px-4 py-3">Device</th>
+          <th class="text-left font-normal px-4 py-3">Op id</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for o in ops %}
+        <tr class="border-t hairline">
+          <td class="px-4 py-2 mono text-xs dim whitespace-nowrap">{{ o.created_at }}</td>
+          <td class="px-4 py-2">{{ o.op_kind }}</td>
+          <td class="px-4 py-2 mono text-xs"><span class="dim">{{ o.entity_type }}</span>:{{ o.entity_id }}</td>
+          <td class="px-4 py-2">{{ o.device_label or '—' }}</td>
+          <td class="px-4 py-2 mono text-xs dim">{{ o.id }}</td>
+        </tr>
+        {% else %}
+        <tr><td class="px-4 py-6 dim text-center" colspan="5">No ops yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="mt-4 text-xs dim">
+    limit: {{ limit }} ·
+    <a class="underline underline-offset-4" href="/dashboard/ops?limit=200">show 200</a>
+  </div>
+</div>
+{% endblock %}

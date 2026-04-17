@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Devices · Kontext{% endblock %}
+{% block content %}
+<div class="max-w-5xl">
+  <div class="flex items-baseline justify-between mb-10">
+    <h1 class="text-2xl">Devices</h1>
+    <div class="mono text-xs dim">{{ devices | length }} enrolled</div>
+  </div>
+
+  <div class="border hairline rounded overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-neutral-900/40 text-xs uppercase tracking-widest dim">
+        <tr>
+          <th class="text-left font-normal px-4 py-3">Label</th>
+          <th class="text-left font-normal px-4 py-3">Class</th>
+          <th class="text-left font-normal px-4 py-3">Device id</th>
+          <th class="text-left font-normal px-4 py-3">Enrolled</th>
+          <th class="text-left font-normal px-4 py-3">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in devices %}
+        <tr class="border-t hairline">
+          <td class="px-4 py-3">{{ d.label }}</td>
+          <td class="px-4 py-3 dim">{{ d.device_class }}</td>
+          <td class="px-4 py-3 mono text-xs">{{ d.id }}</td>
+          <td class="px-4 py-3 mono text-xs dim">{{ d.enrolled_at }}</td>
+          <td class="px-4 py-3">
+            {% if d.revoked_at %}
+              <span class="text-xs text-red-400">revoked</span>
+            {% else %}
+              <span class="text-xs text-emerald-400">active</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td class="px-4 py-6 dim text-center" colspan="5">No devices enrolled.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
