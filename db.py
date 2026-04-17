@@ -377,6 +377,27 @@ def _migration_14_push_cursors(conn):
     """)
 
 
+def _migration_15_retrieval_queries(conn):
+    """Log every kontext_query / kontext_search call for regression tracking."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS retrieval_queries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            query_text TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            semantic_flag INTEGER NOT NULL DEFAULT 0,
+            expanded_query TEXT DEFAULT '',
+            results_json TEXT DEFAULT '',
+            result_count INTEGER NOT NULL DEFAULT 0,
+            latency_ms INTEGER NOT NULL DEFAULT 0,
+            session_id TEXT DEFAULT '',
+            ts TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_rq_ts ON retrieval_queries(ts);
+        CREATE INDEX IF NOT EXISTS idx_rq_session ON retrieval_queries(session_id);
+        CREATE INDEX IF NOT EXISTS idx_rq_tool ON retrieval_queries(tool_name);
+    """)
+
+
 def _migration_12_canonical_objects(conn):
     """Add canonical object and revision tables for curated memory sync."""
     conn.executescript("""
@@ -427,6 +448,7 @@ MIGRATIONS = [
     (12, _migration_12_canonical_objects),
     (13, _migration_13_workspace_auth),
     (14, _migration_14_push_cursors),
+    (15, _migration_15_retrieval_queries),
 ]
 LATEST_SCHEMA_VERSION = max(v for v, _ in MIGRATIONS)
 
@@ -1326,6 +1348,30 @@ class KontextDB:
                     },
                 )
             return event_id
+
+    def add_retrieval_query(self, query_text: str, tool_name: str,
+                            semantic_flag: bool, result_count: int,
+                            latency_ms: int,
+                            expanded_query: str = "",
+                            results_json: str = "",
+                            session_id: str = "") -> int:
+        """Log a kontext_query / kontext_search call. Swallows write errors
+        so a logging bug never breaks the user's query path."""
+        try:
+            with self.transaction():
+                cursor = self._execute(
+                    "INSERT INTO retrieval_queries "
+                    "(query_text, tool_name, semantic_flag, expanded_query, "
+                    "results_json, result_count, latency_ms, session_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (query_text or "", tool_name, 1 if semantic_flag else 0,
+                     expanded_query or "", results_json or "",
+                     int(result_count or 0), int(latency_ms or 0),
+                     session_id or ""),
+                )
+                return cursor.lastrowid or 0
+        except Exception:
+            return 0
 
     def get_tool_events(self, session_id: str = None, promoted: bool = False,
                         since_hours: float = None, limit: int = 100) -> list[dict]:

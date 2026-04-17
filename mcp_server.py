@@ -20,6 +20,7 @@ import logging.handlers
 import os
 import sys
 import re
+import time
 from pathlib import Path
 from datetime import datetime
 
@@ -585,6 +586,7 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
         args = params.get("arguments", {})
 
         if tool_name == "kontext_search":
+            _rq_t0 = time.perf_counter()
             query = args.get("query", "")
             top_k = min(args.get("top_k", 5), 20)
             mode = args.get("mode", "full")
@@ -597,6 +599,28 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                 truncated = True
 
             results = search(query, entries, top_k)
+            try:
+                from retrieval import expand as _expand
+                _rq_expanded = _expand(query)["intent"]
+                _rq_latency_ms = int((time.perf_counter() - _rq_t0) * 1000)
+                _rq_results_json = json.dumps(
+                    [{"filename": r.get("filename"),
+                      "score": round(float(r.get("score") or 0), 4)}
+                     for r in results]
+                )
+                _get_db().add_retrieval_query(
+                    query_text=query,
+                    tool_name="kontext_search",
+                    semantic_flag=True,
+                    result_count=len(results),
+                    latency_ms=_rq_latency_ms,
+                    expanded_query=_rq_expanded,
+                    results_json=_rq_results_json,
+                    session_id=os.environ.get("KONTEXT_SESSION_ID", ""),
+                )
+            except Exception:
+                pass
+
             header = f"**Kontext Search:** {len(results)} files matched"
             if truncated:
                 header += "  _(query truncated to 500 chars)_"
@@ -724,6 +748,8 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                 return _mcp_error(req_id, f"kontext_write failed: {e}")
 
         elif tool_name == "kontext_query":
+            _rq_t0 = time.perf_counter()
+            _rq_expanded = ""
             try:
                 db = _get_db()
                 search_text = args.get("search", "")
@@ -740,6 +766,7 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                     # expansion tokens don't dilute term-match precision.
                     from retrieval import rrf_merge, expand
                     expanded = expand(search_text)
+                    _rq_expanded = expanded["intent"]
                     retriever_limit = max(top_k * 3, 20)
                     fts_results = db.search_entries(
                         expanded["literal"],
@@ -791,6 +818,23 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                             _db.bump_access_count(_e["id"])
                 except Exception:
                     pass
+
+                _rq_latency_ms = int((time.perf_counter() - _rq_t0) * 1000)
+                _rq_results_json = json.dumps(
+                    [{"id": e.get("id"), "file": e.get("file"),
+                      "grade": e.get("grade"), "tier": e.get("tier")}
+                     for e in qresults][:20]
+                )
+                db.add_retrieval_query(
+                    query_text=search_text,
+                    tool_name="kontext_query",
+                    semantic_flag=semantic,
+                    result_count=len(qresults),
+                    latency_ms=_rq_latency_ms,
+                    expanded_query=_rq_expanded,
+                    results_json=_rq_results_json,
+                    session_id=os.environ.get("KONTEXT_SESSION_ID", ""),
+                )
 
                 if not qresults:
                     return _mcp_result(req_id, "No entries found matching those filters.")
