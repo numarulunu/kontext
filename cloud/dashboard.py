@@ -26,6 +26,91 @@ def _resolve_workspace(db) -> str:
     return row["id"] if row else ""
 
 
+SCORE_TARGETS = {
+    "breadth_files": 20,      # distinct library files
+    "depth_entries": 2000,    # total entries
+    "recency_days": 30,       # active window
+    "longevity_days": 365,    # 1 year = maxed
+    "linkage_ratio": 1.0,     # 1 relation per entry
+}
+
+SCORE_WEIGHTS = {
+    "breadth": 0.25,
+    "depth": 0.25,
+    "recency": 0.20,
+    "longevity": 0.15,
+    "linkage": 0.15,
+}
+
+LEVELS = [
+    (0, "Stranger"),
+    (20, "Acquaintance"),
+    (40, "Familiar"),
+    (60, "Close"),
+    (80, "Trusted"),
+]
+
+NUDGES = {
+    "breadth": "Write about more topics — hit library files you haven't touched.",
+    "depth": "Feed more chats, notes, or transcripts to grow raw entry count.",
+    "recency": "Recent activity is thin — talk to Claude, capture will follow.",
+    "longevity": "This one just takes time. It grows on its own.",
+    "linkage": "Relations are sparse — run /kontext brainstorm to link entities.",
+}
+
+
+def _level_for(score: int) -> str:
+    name = LEVELS[0][1]
+    for threshold, label in LEVELS:
+        if score >= threshold:
+            name = label
+    return name
+
+
+def _compute_score(conn) -> dict:
+    total = conn.execute("SELECT count(*) AS n FROM entries").fetchone()["n"] or 0
+    distinct_files = conn.execute("SELECT count(DISTINCT file) AS n FROM entries").fetchone()["n"] or 0
+    recent = conn.execute(
+        "SELECT count(*) AS n FROM entries WHERE updated_at > datetime('now', '-30 days')"
+    ).fetchone()["n"] or 0
+    first_row = conn.execute("SELECT min(created_at) AS first FROM entries").fetchone()
+    first_at = first_row["first"] if first_row else None
+    age_row = conn.execute(
+        "SELECT CAST(julianday('now') - julianday(min(created_at)) AS INT) AS d FROM entries"
+    ).fetchone()
+    age_days = age_row["d"] if age_row and age_row["d"] is not None else 0
+    relation_count = conn.execute("SELECT count(*) AS n FROM relations").fetchone()["n"] or 0
+
+    breadth = min(distinct_files / SCORE_TARGETS["breadth_files"], 1.0)
+    depth = min(total / SCORE_TARGETS["depth_entries"], 1.0)
+    recency = (recent / total) if total > 0 else 0.0
+    longevity = min(age_days / SCORE_TARGETS["longevity_days"], 1.0)
+    linkage = min((relation_count / total) if total > 0 else 0.0, SCORE_TARGETS["linkage_ratio"])
+
+    dims = {
+        "breadth": round(breadth * 100),
+        "depth": round(depth * 100),
+        "recency": round(recency * 100),
+        "longevity": round(longevity * 100),
+        "linkage": round(linkage * 100),
+    }
+    score = round(sum(dims[k] * SCORE_WEIGHTS[k] for k in dims))
+    actionable = {k: v for k, v in dims.items() if k != "longevity"}
+    weakest = min(actionable, key=lambda k: actionable[k])
+    return {
+        "score": score,
+        "level": _level_for(score),
+        "dimensions": dims,
+        "known_since": first_at,
+        "age_days": age_days,
+        "distinct_files": distinct_files,
+        "relation_count": relation_count,
+        "recent_30d": recent,
+        "weakest": weakest,
+        "nudge": NUDGES[weakest],
+    }
+
+
 def register_dashboard(app, db_path: str) -> None:
     """Mount the dashboard routes on `app`."""
     app.include_router(_build_router(db_path))
@@ -75,6 +160,7 @@ def _build_router(db_path: str) -> APIRouter:
             tier_dist = conn.execute(
                 "SELECT tier, count(*) AS n FROM entries GROUP BY tier"
             ).fetchall()
+            score = _compute_score(conn)
         active_devices = [d for d in devices if d["revoked_at"] is None]
         return templates.TemplateResponse(
             request,
@@ -89,6 +175,7 @@ def _build_router(db_path: str) -> APIRouter:
                 "last_op_at": last_op["created_at"] if last_op else None,
                 "per_file": [dict(r) for r in per_file],
                 "tier_dist": {r["tier"]: r["n"] for r in tier_dist},
+                "score": score,
                 "nav_active": "overview",
             },
         )

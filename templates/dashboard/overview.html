@@ -7,7 +7,53 @@
     <div class="mono text-xs dim">{{ workspace_id }}</div>
   </div>
 
-  <div class="grid grid-cols-4 gap-4 mb-12">
+  <div class="border hairline rounded p-8 mb-10">
+    <div class="grid grid-cols-[auto_1fr] gap-10 items-start">
+      <div>
+        <div class="text-xs uppercase tracking-widest dim mb-3">Kontext score</div>
+        <div class="flex items-baseline gap-2">
+          <div class="text-6xl mono">{{ score.score }}</div>
+          <div class="text-xl dim">/ 100</div>
+        </div>
+        <div class="mt-2 mono text-lg">{{ score.level }}</div>
+        <div class="mt-4 text-xs dim">
+          known since <span class="mono text-neutral-400">{{ score.known_since or '—' }}</span>
+          <br/>
+          <span class="mono text-neutral-400">{{ score.age_days }}</span> day{{ '' if score.age_days == 1 else 's' }}
+        </div>
+      </div>
+
+      <div>
+        <div class="space-y-3">
+          {% set dim_labels = {
+            'breadth': ('Breadth', score.distinct_files ~ ' files'),
+            'depth':   ('Depth',   entries_count ~ ' entries'),
+            'recency': ('Recency', score.recent_30d ~ ' in 30d'),
+            'longevity': ('Longevity', score.age_days ~ ' d'),
+            'linkage': ('Linkage', score.relation_count ~ ' relations'),
+          } %}
+          {% for key, pct in score.dimensions.items() %}
+            {% set label, detail = dim_labels[key] %}
+            <div>
+              <div class="flex items-baseline justify-between text-xs mb-1">
+                <span>{{ label }} <span class="dim ml-2 mono">{{ detail }}</span></span>
+                <span class="mono">{{ pct }}%</span>
+              </div>
+              <div class="h-1.5 bg-neutral-900 rounded overflow-hidden">
+                <div class="h-full bg-neutral-400" style="width: {{ pct }}%"></div>
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+        <div class="mt-6 text-xs dim border-t hairline pt-4">
+          <span class="uppercase tracking-widest mr-2">next</span>
+          {{ score.nudge }}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-4 gap-4 mb-10">
     <div class="border hairline rounded p-5">
       <div class="text-xs uppercase tracking-widest dim mb-2">Entries</div>
       <div class="text-3xl mono">{{ entries_count }}</div>
