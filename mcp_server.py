@@ -181,15 +181,75 @@ def index_memories(memory_dir: Path, force: bool = False) -> list[dict]:
 
 
 def search(query: str, entries: list[dict], top_k: int = 6) -> list[dict]:
-    """Find the most relevant memory files for a query."""
+    """Rank memory files by evidence from their fact-level entries.
+
+    Runs the same retrieval path as kontext_query (FTS5 + expanded-semantic,
+    RRF-fused), groups matched entries by file, and scores each file as the
+    sum of its top-3 entry grades (normalized to 0..1). This replaces the
+    old description-cosine ranking, which compared queries against a single
+    ~100-word file summary and missed specific facts.
+
+    Falls back to description-cosine / keyword-overlap when the DB is
+    unavailable or produces no hits (e.g. empty DB on first run).
+    """
     if not entries:
         return []
 
+    # File metadata lookup -- DB rows carry only the filename, we need
+    # title/path/description for display.
+    meta_by_filename = {e["filename"]: e for e in entries}
+
+    try:
+        from retrieval import rrf_merge, expand
+        db = _get_db()
+        expanded = expand(query)
+        fts_rows = db.search_entries(expanded["literal"], limit=50)
+        try:
+            model = get_model()
+            vec = model.encode(expanded["intent"])
+            if hasattr(vec, "tolist"):
+                vec = vec.tolist()
+            sem_rows = db.semantic_search(list(vec), limit=50)
+            merged = rrf_merge(fts_rows, sem_rows)
+        except Exception as e:
+            _logger.warning(f"SEMANTIC FALLBACK in search: {type(e).__name__}: {e}")
+            merged = fts_rows
+    except Exception as e:
+        _logger.warning(f"DB FALLBACK in search: {type(e).__name__}: {e}")
+        merged = []
+
+    if merged:
+        from collections import defaultdict
+        by_file: dict[str, list[float]] = defaultdict(list)
+        for row in merged:
+            fname = row.get("file")
+            if fname:
+                by_file[fname].append(float(row.get("grade") or 0))
+
+        results = []
+        for fname, grades in by_file.items():
+            meta = meta_by_filename.get(fname)
+            if not meta:
+                # DB has entries for a file no longer in the directory scan.
+                continue
+            # Top-3 grades. Cap normalization at 30 (3 grade-10 facts).
+            top3_sum = sum(sorted(grades)[-3:])
+            results.append({
+                "filename": meta["filename"],
+                "title": meta["title"],
+                "path": meta["path"],
+                "score": min(top3_sum / 30.0, 1.0),
+                "description": meta["description"],
+            })
+        if results:
+            results.sort(key=lambda x: x["score"], reverse=True)
+            return results[:top_k]
+
+    # --- Fallback: old description-based ranking ---
     try:
         model = get_model()
         import numpy as np
     except Exception:
-        # Graceful fallback: keyword match when sentence-transformers unavailable
         query_lower = query.lower()
         query_words = set(query_lower.split())
         results = []
@@ -208,11 +268,9 @@ def search(query: str, entries: list[dict], top_k: int = 6) -> list[dict]:
         return results[:top_k]
 
     query_embedding = model.encode(query)
-
     results = []
     for entry in entries:
         entry_embedding = np.array(entry["embedding"])
-        # Cosine similarity
         similarity = np.dot(query_embedding, entry_embedding) / (
             np.linalg.norm(query_embedding) * np.linalg.norm(entry_embedding)
         )

@@ -293,7 +293,9 @@ class TestKontextQuery:
             assert "Test User" in text
             fake_model.encode.assert_called_once()
             mock_sem.assert_called_once()
-            assert mock_sem.call_args.kwargs.get("limit") == 5
+            # RRF fusion pulls a wider retriever window (max(top_k*3, 20))
+            # before slicing to top_k post-merge.
+            assert mock_sem.call_args.kwargs.get("limit") == 20
 
     def test_semantic_falls_back_on_import_error(self, memory_dir, entries, db):
         """Missing sentence_transformers → fall back to search_entries gracefully."""

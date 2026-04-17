@@ -142,7 +142,7 @@ def load_queries(path: Path) -> list[dict]:
 # Retrieval -- rank unique files from entry-level results
 # ---------------------------------------------------------------------------
 
-def _rank_files(entries: list[dict]) -> list[str]:
+def _rank_files_first_seen(entries: list[dict]) -> list[str]:
     """Collapse a ranked entry list into a ranked unique file list (first-seen order)."""
     seen: list[str] = []
     for e in entries:
@@ -152,7 +152,23 @@ def _rank_files(entries: list[dict]) -> list[str]:
     return seen
 
 
-def run_query(db, query: str, mode: str, top_k: int, model) -> tuple[list[str], int]:
+def _rank_files_by_grade(entries: list[dict]) -> list[str]:
+    """Rank files by top-3 grade-sum of their matched entries (B5 method)."""
+    from collections import defaultdict
+    grades_by_file: dict[str, list[float]] = defaultdict(list)
+    for e in entries:
+        f = e.get("file")
+        if f:
+            grades_by_file[f].append(float(e.get("grade") or 0))
+    scored = [
+        (fname, sum(sorted(gs)[-3:]))
+        for fname, gs in grades_by_file.items()
+    ]
+    scored.sort(key=lambda x: -x[1])
+    return [fname for fname, _ in scored]
+
+
+def run_query(db, query: str, mode: str, top_k: int, model, rank: str = "first_seen") -> tuple[list[str], int]:
     """Execute one query. Returns (ranked_files, latency_ms).
 
     Mirrors mcp_server.py's kontext_query flow:
@@ -193,7 +209,8 @@ def run_query(db, query: str, mode: str, top_k: int, model) -> tuple[list[str], 
         raise ValueError(f"unknown mode: {mode!r}")
 
     latency_ms = int((time.perf_counter() - t0) * 1000)
-    return _rank_files(entries), latency_ms
+    ranker = _rank_files_by_grade if rank == "grade" else _rank_files_first_seen
+    return ranker(entries), latency_ms
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +287,10 @@ def main() -> int:
         help="Retrieval mode: fts5 (keyword), semantic (embedding), rrf (fused). Default: rrf.",
     )
     parser.add_argument(
+        "--rank", default="first_seen", choices=["first_seen", "grade"],
+        help="File ranking: first_seen (B3/B4 method) or grade (B5: top-3 grade sum).",
+    )
+    parser.add_argument(
         "--top-k", type=int, default=5,
         help="File-level top-k for metrics reporting (default: 5).",
     )
@@ -335,7 +356,7 @@ def main() -> int:
     # Run queries
     rows: list[dict] = []
     for i, q in enumerate(queries, start=1):
-        ranked, latency_ms = run_query(db, q["query"], mode, args.top_k, model)
+        ranked, latency_ms = run_query(db, q["query"], mode, args.top_k, model, args.rank)
         r3 = recall_at_k(q["expected_files"], ranked, 3)
         r5 = recall_at_k(q["expected_files"], ranked, 5)
         m = mrr(q["expected_files"], ranked)
