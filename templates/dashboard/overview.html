@@ -1,13 +1,22 @@
 {% extends "base.html" %}
 {% block title %}Overview · Kontext{% endblock %}
 {% block content %}
-<div class="max-w-4xl">
+<div class="max-w-5xl">
   <div class="flex items-baseline justify-between mb-10">
     <h1 class="text-2xl">Overview</h1>
     <div class="mono text-xs dim">{{ workspace_id }}</div>
   </div>
 
   <div class="grid grid-cols-4 gap-4 mb-12">
+    <div class="border hairline rounded p-5">
+      <div class="text-xs uppercase tracking-widest dim mb-2">Entries</div>
+      <div class="text-3xl mono">{{ entries_count }}</div>
+      <div class="text-xs dim mt-1">
+        {%- for tier, n in tier_dist.items() -%}
+          {{ tier }}:{{ n }}{% if not loop.last %} · {% endif %}
+        {%- endfor -%}
+      </div>
+    </div>
     <div class="border hairline rounded p-5">
       <div class="text-xs uppercase tracking-widest dim mb-2">Devices</div>
       <div class="text-3xl mono">{{ active_devices }}<span class="dim text-base"> / {{ total_devices }}</span></div>
@@ -21,19 +30,32 @@
       <div class="text-xs uppercase tracking-widest dim mb-2">Canonical</div>
       <div class="text-3xl mono">{{ canonical_count }}</div>
     </div>
-    <div class="border hairline rounded p-5">
-      <div class="text-xs uppercase tracking-widest dim mb-2">Last op</div>
-      <div class="mono text-sm">{{ last_op_at or '—' }}</div>
-    </div>
   </div>
 
-  <div class="border hairline rounded p-5 text-sm">
-    <div class="text-xs uppercase tracking-widest dim mb-3">Quick links</div>
-    <ul class="space-y-1">
-      <li><a class="underline underline-offset-4 decoration-neutral-700 hover:decoration-neutral-400" href="/dashboard/devices">→ devices</a></li>
-      <li><a class="underline underline-offset-4 decoration-neutral-700 hover:decoration-neutral-400" href="/dashboard/ops">→ recent ops</a></li>
-      <li><a class="underline underline-offset-4 decoration-neutral-700 hover:decoration-neutral-400" href="/docs">→ API docs</a></li>
-    </ul>
+  <div class="grid grid-cols-2 gap-6">
+    <div class="border hairline rounded p-5">
+      <div class="text-xs uppercase tracking-widest dim mb-4">Top files</div>
+      <ul class="text-sm space-y-1">
+        {% for row in per_file %}
+          <li class="flex justify-between items-baseline">
+            <span class="mono text-xs truncate mr-3">{{ row.file }}</span>
+            <span class="mono dim">{{ row.n }}</span>
+          </li>
+        {% else %}
+          <li class="dim text-xs">No entries yet.</li>
+        {% endfor %}
+      </ul>
+    </div>
+    <div class="border hairline rounded p-5">
+      <div class="text-xs uppercase tracking-widest dim mb-4">Activity</div>
+      <div class="text-sm">
+        <div class="flex justify-between mb-2"><span class="dim">Last op</span><span class="mono text-xs">{{ last_op_at or '—' }}</span></div>
+      </div>
+      <div class="mt-6 text-xs dim">
+        <a class="underline underline-offset-4" href="/dashboard/entries">→ browse entries</a> ·
+        <a class="underline underline-offset-4" href="/dashboard/ops">→ recent ops</a>
+      </div>
+    </div>
   </div>
 </div>
 {% endblock %}

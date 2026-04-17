@@ -17,28 +17,23 @@
   </style>
 </head>
 <body class="min-h-screen antialiased">
-  {% if request.cookies.get('kontext_session') %}
   <div class="flex min-h-screen">
     <aside class="w-52 border-r hairline p-6 flex flex-col">
       <div class="mono text-xs tracking-widest uppercase dim mb-8">Kontext</div>
       <nav class="flex flex-col gap-1 text-sm">
         {% set nav = [('overview','/dashboard','Overview'),
+                      ('entries','/dashboard/entries','Entries'),
                       ('devices','/dashboard/devices','Devices'),
                       ('ops','/dashboard/ops','Ops')] %}
         {% for key,href,label in nav %}
           <a href="{{ href }}" class="px-3 py-2 rounded {% if nav_active == key %}bg-neutral-900 text-neutral-100{% else %}hover:bg-neutral-900/40{% endif %}">{{ label }}</a>
         {% endfor %}
       </nav>
-      <form action="/dashboard/logout" method="post" class="mt-auto">
-        <button class="text-xs dim hover:text-neutral-300" type="submit">sign out</button>
-      </form>
+      <div class="mt-auto text-xs dim mono">{{ workspace_id or '' }}</div>
     </aside>
     <main class="flex-1 p-10">
       {% block content %}{% endblock %}
     </main>
   </div>
-  {% else %}
-    {% block bare %}{% endblock %}
-  {% endif %}
 </body>
 </html>

@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Entries · Kontext{% endblock %}
+{% block content %}
+<div class="max-w-6xl">
+  <div class="flex items-baseline justify-between mb-6">
+    <h1 class="text-2xl">Entries</h1>
+    <div class="mono text-xs dim">{{ total }} total · showing {{ entries | length }}</div>
+  </div>
+
+  <form method="get" class="mb-6 flex gap-3">
+    <input name="q" value="{{ q }}" placeholder="search fact / file / source"
+           class="flex-1 bg-neutral-900/40 border hairline rounded px-3 py-2 text-sm mono focus:outline-none focus:border-neutral-600" />
+    <input type="hidden" name="limit" value="{{ limit }}" />
+    <button class="border hairline rounded px-4 text-sm hover:bg-neutral-900/40">search</button>
+    {% if q %}<a href="/dashboard/entries" class="text-xs dim self-center">clear</a>{% endif %}
+  </form>
+
+  <div class="grid grid-cols-2 gap-4 mb-8 text-sm">
+    <div class="border hairline rounded p-4">
+      <div class="text-xs uppercase tracking-widest dim mb-3">Tier</div>
+      <div class="flex gap-4 mono">
+        {% for tier, n in tier_dist.items() %}
+          <div><span class="dim">{{ tier }}</span> {{ n }}</div>
+        {% else %}
+          <span class="dim text-xs">—</span>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="border hairline rounded p-4">
+      <div class="text-xs uppercase tracking-widest dim mb-3">Grade</div>
+      <div class="flex gap-4 mono">
+        {% for row in grade_buckets %}
+          <div><span class="dim">{{ row.bucket }}</span> {{ row.n }}</div>
+        {% else %}
+          <span class="dim text-xs">—</span>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="space-y-3">
+    {% for e in entries %}
+      <div class="border hairline rounded p-4">
+        <div class="flex items-baseline justify-between mb-2 text-xs">
+          <span class="mono dim">{{ e.file }}</span>
+          <span class="mono dim">#{{ e.id }} · tier:{{ e.tier }} · grade:{{ '%.1f' % e.grade }} · {{ e.updated_at }}</span>
+        </div>
+        <div class="text-sm whitespace-pre-wrap">{{ e.fact }}</div>
+        {% if e.source %}
+          <div class="mt-2 text-xs dim mono">{{ e.source }}</div>
+        {% endif %}
+      </div>
+    {% else %}
+      <div class="border hairline rounded p-8 text-center dim text-sm">No entries match.</div>
+    {% endfor %}
+  </div>
+
+  <div class="mt-6 text-xs dim">
+    limit: {{ limit }} ·
+    <a class="underline underline-offset-4" href="?limit=200{% if q %}&q={{ q }}{% endif %}">200</a> ·
+    <a class="underline underline-offset-4" href="?limit=500{% if q %}&q={{ q }}{% endif %}">500</a>
+  </div>
+</div>
+{% endblock %}

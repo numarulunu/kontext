@@ -77,14 +77,11 @@ def _authorize_workspace(db, workspace_id: str, authorization: str | None) -> No
 
 
 def build_app(db) -> FastAPI:
-    import os as _os
-
     app = FastAPI(title="Kontext Cloud Control Plane")
     db_path = db.db_path
 
-    if _os.environ.get("KONTEXT_SESSION_SECRET", "").strip():
-        from cloud.dashboard import register_dashboard
-        register_dashboard(app, db_path)
+    from cloud.dashboard import register_dashboard
+    register_dashboard(app, db_path)
 
     def require_workspace_auth(
         workspace_id: str,

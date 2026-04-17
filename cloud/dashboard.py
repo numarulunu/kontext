@@ -1,82 +1,33 @@
 """Dashboard routes for the single-admin Kontext control plane.
 
-Workspace-token gated. Read-only in v1: overview, devices, ops feed.
-Cookie-based session via itsdangerous, 30-day TTL, HttpOnly + Secure.
+No auth — single-user, obscure URL. Reads straight from the local DB.
+Overview / Entries / Devices / Ops pages. Entries page is the quality
+check — shows file, fact, grade, tier so you can eyeball whether the
+library is being written sensibly.
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-from fastapi import APIRouter, Cookie, Depends, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
-from cloud.auth import verify_workspace_token
 from db import KontextDB
 
 
-class NotAuthenticated(Exception):
-    """Raised by dashboard auth dependency to signal a redirect to /dashboard/login."""
-
-
-SESSION_COOKIE = "kontext_session"
-SESSION_MAX_AGE_SEC = 60 * 60 * 24 * 30  # 30 days
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates" / "dashboard"
 
 
-def _require_secret() -> str:
-    secret = os.environ.get("KONTEXT_SESSION_SECRET", "").strip()
-    if not secret:
-        raise RuntimeError(
-            "KONTEXT_SESSION_SECRET is required to run the dashboard"
-        )
-    return secret
-
-
-def _signer() -> URLSafeTimedSerializer:
-    return URLSafeTimedSerializer(_require_secret(), salt="kontext.dashboard")
-
-
-def _sign_session(workspace_id: str) -> str:
-    return _signer().dumps({"workspace_id": workspace_id})
-
-
-def _load_session(token: str | None) -> str | None:
-    if not token:
-        return None
-    try:
-        data = _signer().loads(token, max_age=SESSION_MAX_AGE_SEC)
-        return data.get("workspace_id")
-    except (BadSignature, SignatureExpired):
-        return None
-
-
-def _valid_workspace_token(db, workspace_id: str, token: str) -> bool:
-    record = db.get_workspace_token_record(workspace_id)
-    if not record:
-        return False
-    return bool(verify_workspace_token(token, record["salt"], record["hash"]))
-
-
-def _current_workspace(
-    session: str | None = Cookie(default=None, alias=SESSION_COOKIE),
-) -> str:
-    workspace_id = _load_session(session)
-    if not workspace_id:
-        raise NotAuthenticated()
-    return workspace_id
+def _resolve_workspace(db) -> str:
+    row = db.conn.execute(
+        "SELECT id FROM workspaces ORDER BY created_at ASC LIMIT 1"
+    ).fetchone()
+    return row["id"] if row else ""
 
 
 def register_dashboard(app, db_path: str) -> None:
-    """Mount the dashboard routes + NotAuthenticated redirect handler on `app`."""
-    _require_secret()
-
-    @app.exception_handler(NotAuthenticated)
-    async def _redirect_to_login(request, exc):
-        return RedirectResponse(url="/dashboard/login", status_code=303)
-
+    """Mount the dashboard routes on `app`."""
     app.include_router(_build_router(db_path))
 
 
@@ -84,48 +35,11 @@ def _build_router(db_path: str) -> APIRouter:
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     router = APIRouter()
 
-    @router.get("/dashboard/login", response_class=HTMLResponse)
-    def login_form(request: Request, error: str | None = None):
-        return templates.TemplateResponse(
-            request, "login.html", {"error": error},
-        )
-
-    @router.post("/dashboard/login")
-    def login_submit(
-        workspace_id: str = Form(...),
-        workspace_token: str = Form(...),
-    ):
-        with KontextDB(db_path) as req_db:
-            if not _valid_workspace_token(req_db, workspace_id.strip(), workspace_token.strip()):
-                return RedirectResponse(
-                    url="/dashboard/login?error=invalid",
-                    status_code=303,
-                )
-        response = RedirectResponse(url="/dashboard", status_code=303)
-        response.set_cookie(
-            key=SESSION_COOKIE,
-            value=_sign_session(workspace_id.strip()),
-            max_age=SESSION_MAX_AGE_SEC,
-            httponly=True,
-            secure=True,
-            samesite="lax",
-            path="/",
-        )
-        return response
-
-    @router.post("/dashboard/logout")
-    def logout():
-        response = RedirectResponse(url="/dashboard/login", status_code=303)
-        response.delete_cookie(SESSION_COOKIE, path="/")
-        return response
-
     @router.get("/dashboard", response_class=HTMLResponse)
-    def overview(
-        request: Request,
-        workspace_id: str = Depends(_current_workspace),
-    ):
+    def overview(request: Request):
         with KontextDB(db_path) as req_db:
             conn = req_db.conn
+            workspace_id = _resolve_workspace(req_db)
             devices = conn.execute(
                 """
                 SELECT id, label, device_class, enrolled_at, revoked_at
@@ -149,6 +63,18 @@ def _build_router(db_path: str) -> APIRouter:
                 "ORDER BY rowid DESC LIMIT 1",
                 (workspace_id,),
             ).fetchone()
+            entries_count = conn.execute(
+                "SELECT count(*) AS n FROM entries"
+            ).fetchone()["n"]
+            per_file = conn.execute(
+                """
+                SELECT file, count(*) AS n FROM entries
+                GROUP BY file ORDER BY n DESC LIMIT 8
+                """
+            ).fetchall()
+            tier_dist = conn.execute(
+                "SELECT tier, count(*) AS n FROM entries GROUP BY tier"
+            ).fetchall()
         active_devices = [d for d in devices if d["revoked_at"] is None]
         return templates.TemplateResponse(
             request,
@@ -159,17 +85,78 @@ def _build_router(db_path: str) -> APIRouter:
                 "total_devices": len(devices),
                 "history_count": history_count,
                 "canonical_count": canonical_count,
+                "entries_count": entries_count,
                 "last_op_at": last_op["created_at"] if last_op else None,
+                "per_file": [dict(r) for r in per_file],
+                "tier_dist": {r["tier"]: r["n"] for r in tier_dist},
                 "nav_active": "overview",
             },
         )
 
-    @router.get("/dashboard/devices", response_class=HTMLResponse)
-    def devices_page(
-        request: Request,
-        workspace_id: str = Depends(_current_workspace),
-    ):
+    @router.get("/dashboard/entries", response_class=HTMLResponse)
+    def entries_page(request: Request, limit: int = 50, q: str = ""):
+        limit = max(1, min(limit, 500))
         with KontextDB(db_path) as req_db:
+            conn = req_db.conn
+            workspace_id = _resolve_workspace(req_db)
+            if q.strip():
+                like = f"%{q.strip()}%"
+                rows = conn.execute(
+                    """
+                    SELECT id, file, fact, source, grade, tier,
+                           created_at, updated_at, last_accessed
+                    FROM entries
+                    WHERE fact LIKE ? OR file LIKE ? OR source LIKE ?
+                    ORDER BY id DESC LIMIT ?
+                    """,
+                    (like, like, like, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, file, fact, source, grade, tier,
+                           created_at, updated_at, last_accessed
+                    FROM entries
+                    ORDER BY id DESC LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+            total = conn.execute("SELECT count(*) AS n FROM entries").fetchone()["n"]
+            grade_buckets = conn.execute(
+                """
+                SELECT
+                    CASE
+                        WHEN grade >= 8 THEN 'A (8-10)'
+                        WHEN grade >= 6 THEN 'B (6-8)'
+                        WHEN grade >= 4 THEN 'C (4-6)'
+                        ELSE 'D (<4)'
+                    END AS bucket,
+                    count(*) AS n
+                FROM entries GROUP BY bucket ORDER BY bucket ASC
+                """
+            ).fetchall()
+            tier_dist = conn.execute(
+                "SELECT tier, count(*) AS n FROM entries GROUP BY tier"
+            ).fetchall()
+        return templates.TemplateResponse(
+            request,
+            "entries.html",
+            {
+                "workspace_id": workspace_id,
+                "entries": [dict(r) for r in rows],
+                "total": total,
+                "limit": limit,
+                "q": q,
+                "grade_buckets": [dict(r) for r in grade_buckets],
+                "tier_dist": {r["tier"]: r["n"] for r in tier_dist},
+                "nav_active": "entries",
+            },
+        )
+
+    @router.get("/dashboard/devices", response_class=HTMLResponse)
+    def devices_page(request: Request):
+        with KontextDB(db_path) as req_db:
+            workspace_id = _resolve_workspace(req_db)
             rows = req_db.conn.execute(
                 """
                 SELECT id, label, device_class, enrolled_at, revoked_at
@@ -189,13 +176,10 @@ def _build_router(db_path: str) -> APIRouter:
         )
 
     @router.get("/dashboard/ops", response_class=HTMLResponse)
-    def ops_page(
-        request: Request,
-        workspace_id: str = Depends(_current_workspace),
-        limit: int = 50,
-    ):
+    def ops_page(request: Request, limit: int = 50):
         limit = max(1, min(limit, 200))
         with KontextDB(db_path) as req_db:
+            workspace_id = _resolve_workspace(req_db)
             rows = req_db.conn.execute(
                 """
                 SELECT h.id, h.op_kind, h.entity_type, h.entity_id,
