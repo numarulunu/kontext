@@ -377,6 +377,13 @@ def _migration_14_push_cursors(conn):
     """)
 
 
+def _migration_17_sessions_files_loaded(conn):
+    """Track memory files pulled during a session via kontext_query/search."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+    if "files_loaded" not in cols:
+        conn.execute("ALTER TABLE sessions ADD COLUMN files_loaded TEXT DEFAULT ''")
+
+
 def _migration_15_retrieval_queries(conn):
     """Log every kontext_query / kontext_search call for regression tracking."""
     conn.executescript("""
@@ -449,6 +456,7 @@ MIGRATIONS = [
     (13, _migration_13_workspace_auth),
     (14, _migration_14_push_cursors),
     (15, _migration_15_retrieval_queries),
+    (17, _migration_17_sessions_files_loaded),
 ]
 LATEST_SCHEMA_VERSION = max(v for v, _ in MIGRATIONS)
 
@@ -2138,7 +2146,7 @@ class KontextDB:
 
     def upsert_session_summary(self, hook_session_id: str, investigated: str = "",
                                learned: str = "", files_touched: str = "",
-                               summary: str = "") -> int:
+                               summary: str = "", files_loaded: str = "") -> int:
         """Create/update the session row tied to a hook session ID."""
         if not hook_session_id:
             raise ValueError("hook_session_id is required")
@@ -2154,20 +2162,21 @@ class KontextDB:
                    SET investigated = ?,
                        learned      = ?,
                        files_touched = ?,
+                       files_loaded = ?,
                        summary = CASE WHEN summary = '' THEN ? ELSE summary END
                  WHERE id = ?
                 """,
-                (investigated, learned, files_touched, summary, row["id"]),
+                (investigated, learned, files_touched, files_loaded, summary, row["id"]),
             )
             return row["id"]
 
         cursor = self._execute(
             """
             INSERT INTO sessions
-                (hook_session_id, investigated, learned, files_touched, summary)
-            VALUES (?, ?, ?, ?, ?)
+                (hook_session_id, investigated, learned, files_touched, files_loaded, summary)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (hook_session_id, investigated, learned, files_touched, summary),
+            (hook_session_id, investigated, learned, files_touched, files_loaded, summary),
         )
         return cursor.lastrowid
 

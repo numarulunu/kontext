@@ -99,7 +99,13 @@ def export_all(db: KontextDB, output_dir: Path):
 
 
 def export_memory_index(db: KontextDB, output_dir: Path):
-    """Generate MEMORY.md index from database."""
+    """Generate MEMORY.md index from database.
+
+    Static shape: title + description only. Entry counts were previously
+    appended ("(83 entries)") but that made the file change on every
+    write, invalidating the MEMORY.md-containing prompt cache. Counts are
+    available via db.list_files() if needed for diagnostics.
+    """
     files = db.list_files()
     lines = ["# Memory Index", ""]
 
@@ -109,9 +115,8 @@ def export_memory_index(db: KontextDB, output_dir: Path):
         description = meta["description"]
         if not description:
             description = _FILE_META.get(filename, ("", filename))[1]
-        count = files[filename]
         name = filename.replace(".md", "").replace("_", " ").title()
-        lines.append(f"- [{name}]({filename}) — {description} ({count} entries)")
+        lines.append(f"- [{name}]({filename}) — {description}")
 
     lines.append("")
     (output_dir / "MEMORY.md").write_text("\n".join(lines), encoding="utf-8")

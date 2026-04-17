@@ -37,6 +37,35 @@ def build_summary_fields(events: list[dict]) -> dict[str, str]:
     }
 
 
+def build_files_loaded(db, session_id: str) -> str:
+    """Return comma-joined unique memory files surfaced by retrieval during
+    the session. Best-effort: returns "" on any failure so the hook never
+    breaks on a telemetry bug."""
+    try:
+        rows = db.conn.execute(
+            "SELECT results_json FROM retrieval_queries "
+            "WHERE session_id = ? ORDER BY id ASC",
+            (session_id,),
+        ).fetchall()
+    except Exception:
+        return ""
+
+    seen: list[str] = []
+    for row in rows:
+        raw = row["results_json"] if "results_json" in row.keys() else ""
+        if not raw:
+            continue
+        try:
+            items = json.loads(raw)
+        except Exception:
+            continue
+        for item in items:
+            fname = item.get("file") or item.get("filename")
+            if fname and fname not in seen:
+                seen.append(fname)
+    return ",".join(seen[:40])
+
+
 def main() -> int:
     if os.environ.get("KONTEXT_SKIP_HOOKS"):
         return 0
@@ -58,16 +87,20 @@ def main() -> int:
         db = KontextDB()
         try:
             events = db.get_tool_events(session_id=session_id, limit=200)
-            if not events:
+            files_loaded = build_files_loaded(db, session_id)
+            if not events and not files_loaded:
                 return 0
 
-            fields = build_summary_fields(events)
+            fields = build_summary_fields(events) if events else {
+                "investigated": "", "learned": "", "files_touched": "", "summary": "",
+            }
             db.upsert_session_summary(
                 hook_session_id=session_id,
                 investigated=fields["investigated"],
                 learned=fields["learned"],
                 files_touched=fields["files_touched"],
                 summary=fields["summary"],
+                files_loaded=files_loaded,
             )
         finally:
             db.close()
