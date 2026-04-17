@@ -1,0 +1,50 @@
+# Kontext VPS deploy package — version 1.0.0
+name: kontext-vps
+
+services:
+  kontext:
+    image: ${KONTEXT_IMAGE}
+    container_name: kontext
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      KONTEXT_DB_PATH: /app/data/kontext.db
+      KONTEXT_HOST: 0.0.0.0
+      KONTEXT_PORT: ${KONTEXT_PORT}
+      KONTEXT_LOG_LEVEL: info
+    volumes:
+      - ./data/kontext:/app/data
+
+  kontext-worker:
+    image: ${KONTEXT_IMAGE}
+    container_name: kontext-worker
+    restart: unless-stopped
+    command: ["python", "-m", "cloud.worker"]
+    env_file: .env
+    environment:
+      KONTEXT_DB_PATH: /app/data/kontext.db
+      DREAM_INTERVAL_HOURS: ${DREAM_INTERVAL_HOURS}
+      DIGEST_INTERVAL_HOURS: ${DIGEST_INTERVAL_HOURS}
+      DREAM_DRY_RUN: ${DREAM_DRY_RUN}
+      WORKER_STARTUP_DELAY_SEC: ${WORKER_STARTUP_DELAY_SEC}
+    volumes:
+      - ./data/kontext:/app/data
+    depends_on:
+      - kontext
+
+  caddy:
+    image: ${CADDY_IMAGE}
+    container_name: kontext-caddy
+    restart: unless-stopped
+    depends_on:
+      - kontext
+    environment:
+      KONTEXT_DOMAIN: ${KONTEXT_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy_data:/data
+      - ./data/caddy_config:/config

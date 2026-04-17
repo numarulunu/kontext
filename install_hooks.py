@@ -57,7 +57,7 @@ KONTEXT_SESSION_DETECT = {
                 'echo "$NOW" > "$SEEN"; '
                 'echo "$NOW" > "$HOME/.claude/.kontext_session_last"; '
                 'echo "$NOW" > "$HOME/.claude/.kontext_memory_last"; '
-                'echo \'{"additionalContext":"[Kontext] New session. Call kontext_session with action=get to load what you were working on last. Read relevant memory files based on user topic."}\'; '
+                'echo \'{"additionalContext":"[Kontext] New session. Call kontext_session with action=get and workspace=current repo root or cwd. Do not load task state from a global latest-session note. Read relevant memory files based on user topic."}\'; '
                 'else echo "$NOW" > "$SEEN"; echo \'{"suppressOutput":true}\'; fi'
             ),
             "timeout": 2,
@@ -76,9 +76,9 @@ KONTEXT_SESSION_SAVE = {
                 'test -f "$THROTTLE" && LAST=$(cat "$THROTTLE"); DIFF=$((NOW - LAST)); '
                 'if [ "$DIFF" -lt 60 ]; then echo \'{"suppressOutput":true}\'; '
                 'else echo "$NOW" > "$THROTTLE"; '
-                'echo \'{"additionalContext":"[Kontext] SESSION SAVE. Call kontext_session with action=save. '
+                'echo \'{"additionalContext":"[Kontext] SESSION SAVE. Call kontext_session with action=save and workspace=current repo root or cwd. '
                 "Fill project, status, next_step, key_decisions from current conversation state. "
-                'This writes _last_session.md for the next session. One tool call. Do not skip."}\'; fi'
+                'This writes a workspace-scoped fallback session file. One tool call. Do not skip."}\'; fi'
             ),
             "timeout": 2,
         }

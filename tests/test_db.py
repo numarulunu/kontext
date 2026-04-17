@@ -170,10 +170,32 @@ def test_decay_scores(db):
 
 
 def test_session_state(db):
-    db.save_session(project="Tool Auditor", status="Building Electron apps", next_step="Test AutoPipeline", key_decisions="Shell throttle for memory")
-    session = db.get_latest_session()
+    db.save_session(
+        project="Tool Auditor",
+        status="Building Electron apps",
+        next_step="Test AutoPipeline",
+        key_decisions="Shell throttle for memory",
+        workspace="C:/repos/tool-auditor",
+    )
+    session = db.get_latest_session(workspace="C:/repos/tool-auditor")
     assert session["project"] == "Tool Auditor"
     assert "Building" in session["status"]
+
+
+def test_session_state_scoped_by_workspace(db):
+    db.save_session(project="self-hosting-setup", status="Cutover", workspace="C:/repos/self-hosting-setup")
+    db.save_session(project="OmniRoute", status="Fixing", workspace="C:/repos/omniroute")
+
+    session = db.get_latest_session(workspace="C:/repos/self-hosting-setup")
+
+    assert session["project"] == "self-hosting-setup"
+    assert session["workspace"] == os.path.normcase(os.path.normpath("C:/repos/self-hosting-setup")).replace("\\", "/")
+
+
+def test_unscoped_get_does_not_return_scoped_session(db):
+    db.save_session(project="OmniRoute", status="Fixing", workspace="C:/repos/omniroute")
+
+    assert db.get_latest_session() is None
 
 
 def test_list_files(db):
@@ -297,9 +319,9 @@ def test_get_all_file_meta(db):
 
 def test_purge_old_sessions(db):
     for i in range(10):
-        db.save_session(project=f"Project {i}", status=f"Status {i}")
+        db.save_session(project=f"Project {i}", status=f"Status {i}", workspace="C:/repos/test")
     db.purge_old_sessions(keep=3)
     row = db._execute("SELECT COUNT(*) FROM sessions").fetchone()
     assert row[0] == 3
-    latest = db.get_latest_session()
+    latest = db.get_latest_session(workspace="C:/repos/test")
     assert latest["project"] == "Project 9"

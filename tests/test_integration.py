@@ -85,10 +85,11 @@ class TestWriteExportSyncCycle:
             key_decisions="use pytest",
             summary="Building test suite for Kontext",
             files_touched="db.py, mcp_server.py",
+            workspace="C:/repos/kontext",
         )
 
         # Get session
-        session = db.get_latest_session()
+        session = db.get_latest_session(workspace="C:/repos/kontext")
         assert session is not None
         assert session["project"] == "Test Project"
         assert session["summary"] == "Building test suite for Kontext"

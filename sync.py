@@ -36,7 +36,7 @@ def _maybe_dream(db) -> int:
         try:
             last = datetime.fromisoformat(_DREAM_STAMP.read_text(encoding="utf-8").strip())
             if last.tzinfo is None:
-                last = last.replace(tzinfo=timezone.utc)
+                last = last.astimezone()
             if (now - last).total_seconds() < 86400:
                 return 0
         except (ValueError, OSError):
@@ -99,6 +99,19 @@ def sync(memory_dir: Path = None, dry_run: bool = False, db=None) -> dict:
     owns_db = db is None
     if owns_db:
         db = KontextDB()
+
+    if dry_run:
+        cloud_pulled = 0
+    else:
+        try:
+            from cloud.daemon import cloud_pull_once
+            cloud_pulled = cloud_pull_once(db)
+            if cloud_pulled > 0:
+                log.info(f"SYNC: replayed {cloud_pulled} cloud history ops before file import")
+        except Exception as e:
+            cloud_pulled = 0
+            log.warning(f"SYNC: cloud pull skipped — {e}")
+
     synced = 0
     skipped = 0
     files_checked = 0
@@ -161,10 +174,11 @@ def sync(memory_dir: Path = None, dry_run: bool = False, db=None) -> dict:
 
     if owns_db:
         db.close()
-    return {"synced": synced, "skipped": skipped, "files_checked": files_checked, "decayed": decayed, "dreamed": dreamed}
+    return {"synced": synced, "skipped": skipped, "files_checked": files_checked, "cloud_pulled": cloud_pulled, "decayed": decayed, "dreamed": dreamed}
 
 
 if __name__ == "__main__":
     dry_run = "--dry-run" in sys.argv
     result = sync(dry_run=dry_run)
     print(f"Sync complete: {result['synced']} imported, {result['skipped']} skipped, {result['files_checked']} files checked")
+

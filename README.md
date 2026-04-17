@@ -191,9 +191,9 @@ Claude reads this index (~2,000 tokens) every conversation. Matches your topic t
 The index maps connections between files:
 
 ```
-work ←→ projects (same stack, competing for time)
-habits ←→ goals (procrastination blocks projects)
-feedback ←→ work (tone changes when debugging vs. planning)
+work â†â†’ projects (same stack, competing for time)
+habits â†â†’ goals (procrastination blocks projects)
+feedback â†â†’ work (tone changes when debugging vs. planning)
 ```
 
 > If Claude loads the work file because you mentioned a deadline, it also checks the habits file — there might be a procrastination pattern that's relevant.
@@ -203,9 +203,9 @@ feedback ←→ work (tone changes when debugging vs. planning)
 ### Emotional Routing
 
 ```
-User sounds stressed    → load habits + interaction rules
-User sounds stuck       → load habits + goals
-User sounds excited     → load projects (ride the momentum)
+User sounds stressed    â†’ load habits + interaction rules
+User sounds stuck       â†’ load habits + goals
+User sounds excited     â†’ load projects (ride the momentum)
 ```
 
 No keyword matching needed. Claude reads the room.
@@ -225,6 +225,7 @@ No keyword matching needed. Claude reads the room.
 /kontext brainstorm       Health check + guided cleanup
 /kontext status           Quick overview
 /kontext resolve          Handle contradictions between sources
+/kontext prompts          Search recent prompts captured by hooks
 ```
 
 Or say it naturally — *"update my memory"*, *"clean up memory"*, *"how's my library"* — Claude invokes the right command.
@@ -416,7 +417,7 @@ Kontext includes a local MCP server that finds the right memory files by meaning
 
 Say *"everything feels heavy and I can't start anything"* — Kontext matches it to your psychology file, your blind spots, and your goals. No keyword overlap needed. It understands what you mean.
 
-Runs locally on your machine. No cloud. No API calls. Embeddings are cached — re-indexes only when descriptions change.
+Runs locally on your machine. Retrieval stays local. Optional cloud sync can replicate history across devices, but embeddings and ranking remain local. Embeddings are cached — re-indexes only when descriptions change.
 
 <br>
 
@@ -435,12 +436,13 @@ kontext/
   migrate.py               Import flat memory files into database
   export.py                Export database to backward-compatible markdown
   graph.py                 Knowledge graph — entity extraction and relations
-  sync.py                  Startup sync — imports file edits that missed DB
+  cloud/                   Optional control plane, client, daemon, and replay helpers
+  sync.py                  Startup sync — pulls cloud history, then imports file edits
   kontext.db               SQLite database (auto-created on first use)
   SKILL.md                 /kontext skill for Claude Code
   templates/               Starter files for new users
   pipeline/                Intake processing engine
-  tests/                   94 tests, all passing
+  tests/                   Pytest suite — local and cloud coverage
 ```
 
 <br>

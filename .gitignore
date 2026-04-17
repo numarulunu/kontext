@@ -24,9 +24,21 @@ _conflicts.md
 _embeddings_cache.json
 kontext.db-wal
 kontext.db-shm
+kontext.db
 _dream_last
 _dream.lock
 _dream.log
 _digest_candidates.md
 _digest.log
 kontext.db.bak-*
+.worktrees/
+
+# Local cloud-link state (per-device, contains workspace_id + device_id)
+kontext.cloud.json
+
+# LSP / editor caches
+.serena/
+
+# Pytest skill shim tmpdirs
+tmp-pytest-*/
+.tmp-pytest/

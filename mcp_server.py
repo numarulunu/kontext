@@ -1,7 +1,7 @@
 """
-Kontext MCP Server — Semantic memory retrieval for Claude Code.
+Kontext MCP Server Ã¢â‚¬” Semantic memory retrieval for Claude Code.
 
-Runs locally. No cloud. No API calls. Embeds memory file descriptions
+Runs locally for retrieval. Optional cloud sync is exposed through separate tools. Embeds memory file descriptions
 and returns the most relevant files for any query.
 
 Replaces keyword matching with meaning matching.
@@ -23,7 +23,7 @@ import re
 from pathlib import Path
 from datetime import datetime
 
-# Set up file logging — every write, every failure, every tool call.
+# Set up file logging Ã¢â‚¬” every write, every failure, every tool call.
 # Rotating handler: 1 MB per file, 2 backups = hard cap ~3 MB.
 _LOG_FILE = Path(__file__).parent / "_kontext.log"
 _logger = logging.getLogger("kontext")
@@ -34,7 +34,7 @@ _file_handler = logging.handlers.RotatingFileHandler(
 _file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
 _logger.addHandler(_file_handler)
 
-# Lazy imports — only load heavy libs when needed
+# Lazy imports Ã¢â‚¬” only load heavy libs when needed
 _model = None
 _embeddings_cache = {}
 _cache_file = None
@@ -112,12 +112,12 @@ def parse_memory_index(memory_dir: Path) -> list[dict]:
     content = index_path.read_text(encoding="utf-8")
 
     for line in content.split("\n"):
-        # Match: - [Title](filename.md) — description
-        match = re.match(r"^-\s+\[(.+?)\]\((.+?\.md)\)\s*[—–-]\s*(.+?)(?:\*\*Updated.*)?$", line.strip())
+        # Match: - [Title](filename.md) Ã¢â‚¬” description
+        match = re.match(r"^-\s+\[(.+?)\]\((.+?\.md)\)\s*(.+)$", line.strip())
         if match:
             title = match.group(1)
             filename = match.group(2)
-            description = match.group(3).strip()
+            description = re.sub(r"^[^A-Za-z0-9]+", "", match.group(3).strip())
             filepath = memory_dir / filename
 
             if filepath.exists():
@@ -264,7 +264,7 @@ _TOOL_DEFINITIONS = [
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "What you are looking for — a topic, question, or user message",
+                    "description": "What you are looking for Ã¢â‚¬” a topic, question, or user message",
                 },
                 "top_k": {
                     "type": "integer",
@@ -277,7 +277,7 @@ _TOOL_DEFINITIONS = [
                     "description": (
                         "full (default) = file paths + descriptions. "
                         "index = compact: fact count, top grade, top fact preview, "
-                        "estimated token cost — lets you choose which files are worth loading."
+                        "estimated token cost Ã¢â‚¬” lets you choose which files are worth loading."
                     ),
                     "default": "full",
                 },
@@ -362,7 +362,7 @@ _TOOL_DEFINITIONS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "auto": {"type": "boolean", "description": "Auto-import high-confidence facts (grade >= min_grade). Default false — writes candidates file for review.", "default": False},
+                "auto": {"type": "boolean", "description": "Auto-import high-confidence facts (grade >= min_grade). Default false Ã¢â‚¬” writes candidates file for review.", "default": False},
                 "dry_run": {"type": "boolean", "description": "Show what would be extracted without modifying (default false)", "default": False},
                 "min_grade": {"type": "integer", "description": "Minimum grade for auto-import (default 8)", "default": 8},
             },
@@ -386,14 +386,65 @@ _TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "action": {"type": "string", "description": "save to store session state, get to retrieve the latest", "enum": ["save", "get"]},
+                "workspace": {"type": "string", "description": "Current repo root or cwd. Required for safe save/get."},
                 "project": {"type": "string", "description": "Project name (for save)"},
                 "status": {"type": "string", "description": "Current status summary (for save)"},
                 "next_step": {"type": "string", "description": "What to do next (for save)"},
                 "key_decisions": {"type": "string", "description": "Important decisions made this session (for save)"},
-                "summary": {"type": "string", "description": "2-3 sentence conversation summary — what was discussed, tone, direction (for save)"},
+                "summary": {"type": "string", "description": "2-3 sentence conversation summary Ã¢â‚¬” what was discussed, tone, direction (for save)"},
                 "files_touched": {"type": "string", "description": "Comma-separated list of files edited or discussed this session (for save)"},
             },
             "required": ["action"],
+        },
+    },
+       {
+        "name": "kontext_cloud_status",
+        "description": "Show cloud link status, workspace, device, and the current sync cursor.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "kontext_cloud_link",
+        "description": "Link this Kontext database to a cloud control plane workspace.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "server_url": {"type": "string", "description": "Cloud control plane base URL"},
+                "workspace_id": {"type": "string", "description": "Workspace identifier"},
+                "workspace_name": {"type": "string", "description": "Optional workspace display name"},
+                "recovery_key_id": {"type": "string", "description": "Optional recovery key id"},
+                "device_id": {"type": "string", "description": "Optional device identifier"},
+                "label": {"type": "string", "description": "Device label for this machine"},
+                "device_class": {
+                    "type": "string",
+                    "enum": ["interactive", "server"],
+                    "description": "Device type for quota enforcement",
+                    "default": "interactive"
+                }
+            },
+            "required": ["server_url", "workspace_id"],
+        },
+    },
+    {
+        "name": "kontext_cloud_sync",
+        "description": "Push local history ops, pull remote history ops, and update the sync cursor.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Per-request pull page size (default 500)", "default": 500}
+            },
+        },
+    },
+    {
+        "name": "kontext_cloud_recover",
+        "description": "Replay the full remote history lane into this local database.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Per-request pull page size (default 500)", "default": 500}
+            },
         },
     },
     {
@@ -431,6 +482,8 @@ _TOOL_DEFINITIONS = [
                     "type": "integer",
                     "description": "Max results to return (default 20, max 100)",
                     "default": 20,
+                    "minimum": 1,
+                    "maximum": 100,
                 },
             },
         },
@@ -454,7 +507,7 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
             "id": req_id,
             "result": {
                 "protocolVersion": "2024-11-05",
-                "serverInfo": {"name": "kontext-memory", "version": "6.0.0"},
+                "serverInfo": {"name": "kontext-memory", "version": "6.1.0"},
                 "capabilities": {"tools": {"listChanged": False}},
             },
         }
@@ -505,9 +558,9 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                     top_grade = st.get("top_grade", "?")
                     est_tokens = fact_count * 15 if isinstance(fact_count, int) else "?"
                     top_fact = st.get("top_fact", "") or ""
-                    preview = (top_fact[:80] + "…") if len(top_fact) > 80 else top_fact
+                    preview = (top_fact[:80] + "...") if len(top_fact) > 80 else top_fact
                     output_lines.append(
-                        f"{i}. **{r['title']}** (`{fname}`) — {score_pct}% match"
+                        f"{i}. **{r['title']}** (`{fname}`) - {score_pct}% match"
                         f" | {fact_count} facts | top grade {top_grade} | ~{est_tokens} tokens"
                     )
                     if preview:
@@ -518,7 +571,7 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                 for i, r in enumerate(results, 1):
                     score_pct = int(r["score"] * 100)
                     output_lines.append(
-                        f"{i}. **{r['title']}** (`{r['filename']}`) — {score_pct}% match"
+                        f"{i}. **{r['title']}** (`{r['filename']}`) - {score_pct}% match"
                     )
                     output_lines.append(f"   {r['description']}")
                     output_lines.append(f"   Path: `{r['path']}`\n")
@@ -563,7 +616,7 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                 if not file or not fact:
                     return _mcp_error(req_id, "file and fact are required")
 
-                # Input validation — prevent OOM on embedding and DB bloat
+                # Input validation Ã¢â‚¬” prevent OOM on embedding and DB bloat
                 if len(fact) > 5000:
                     return _mcp_error(req_id, f"fact too long ({len(fact)} chars, max 5000)")
                 if len(file) > 200:
@@ -588,7 +641,7 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                     _logger.warning(f"EMBED FAILED for entry #{entry_id}: {type(embed_err).__name__}: {embed_err}")
 
                 # Auto-export the affected file and update MEMORY.md.
-                # FS errors are logged but do NOT roll back the DB — DB is source of truth;
+                # FS errors are logged but do NOT roll back the DB Ã¢â‚¬” DB is source of truth;
                 # a partial export is recoverable via kontext_reindex.
                 export_failed = False
                 try:
@@ -602,9 +655,9 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                 _logger.info(f"WRITE: {file} | {fact[:80]} | grade={grade} tier={tier}")
                 msg = f"Wrote entry #{entry_id} to {file} (grade {grade}, {tier})."
                 if embed_failed:
-                    msg += " NOTE: embedding failed — entry won't appear in semantic search. Run kontext_reindex to retry."
+                    msg += " NOTE: embedding failed Ã¢â‚¬” entry won't appear in semantic search. Run kontext_reindex to retry."
                 if export_failed:
-                    msg += " WARNING: markdown export failed — DB is correct, re-run kontext_reindex to refresh files."
+                    msg += " WARNING: markdown export failed Ã¢â‚¬” DB is correct, re-run kontext_reindex to refresh files."
                 if not (embed_failed or export_failed):
                     msg += " Exported to markdown."
                 return _mcp_result(req_id, msg)
@@ -637,8 +690,9 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                         )
                         if args.get("tier"):
                             qresults = [r for r in qresults if r.get("tier") == args["tier"]]
-                    except ImportError:
-                        fallback_note = " (semantic unavailable — using keyword search)"
+                    except Exception as e:
+                        _logger.warning(f"SEMANTIC FALLBACK: {type(e).__name__}: {e}")
+                        fallback_note = " (semantic unavailable - using keyword search)"
                         qresults = db.search_entries(
                             search_text,
                             file=args.get("file"),
@@ -743,7 +797,7 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                     )
                     if total > 0:
                         from export import export_all, export_memory_index
-                        # Use the memory_dir already resolved at handler entry —
+                        # Use the memory_dir already resolved at handler entry Ã¢â‚¬”
                         # avoids a redundant find_memory_dir() disk scan.
                         export_all(db, memory_dir)
                         export_memory_index(db, memory_dir)
@@ -805,7 +859,14 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                 action = args.get("action", "")
 
                 if action == "save":
+                    workspace = args.get("workspace", "")
+                    if not str(workspace).strip():
+                        return _mcp_result(
+                            req_id,
+                            "Workspace is required for safe session save. Pass the current repo root or cwd.",
+                        )
                     db.save_session(
+                        workspace=workspace,
                         project=args.get("project", ""),
                         status=args.get("status", ""),
                         next_step=args.get("next_step", ""),
@@ -817,12 +878,19 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                     return _mcp_result(req_id, "Session state saved.")
 
                 elif action == "get":
-                    session = db.get_latest_session()
+                    workspace = args.get("workspace", "")
+                    if not str(workspace).strip():
+                        return _mcp_result(
+                            req_id,
+                            "Workspace is required for safe session restore. Pass the current repo root or cwd.",
+                        )
+                    session = db.get_latest_session(workspace=workspace)
                     if not session:
-                        return _mcp_result(req_id, "No saved sessions found.")
+                        return _mcp_result(req_id, f"No saved sessions found for workspace: {workspace}")
 
                     lines = [
                         "**Latest session:**",
+                        f"  Workspace: {session.get('workspace', '')}",
                         f"  Project: {session.get('project', '')}",
                         f"  Status: {session.get('status', '')}",
                         f"  Next step: {session.get('next_step', '')}",
@@ -841,6 +909,85 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                 return _mcp_error(req_id, f"kontext_session failed: {e}")
 
 
+        elif tool_name == "kontext_cloud_status":
+            try:
+                from cloud.daemon import get_status
+
+                status = get_status(_get_db())
+                if not status.get("linked"):
+                    return _mcp_result(req_id, "Cloud sync not linked.")
+
+                lines = [
+                    "**Cloud status:**",
+                    f"  Server: {status.get('server_url', '')}",
+                    f"  Workspace: {status.get('workspace_id', '')}",
+                    f"  Device: {status.get('device_id', '')} ({status.get('device_class', '')})",
+                    f"  Cursor: {status.get('cursor', '') or '(empty)'}",
+                    f"  History ops: {status.get('history_count', 0)}",
+                ]
+                return _mcp_result(req_id, "\n".join(lines))
+            except Exception as e:
+                return _mcp_error(req_id, f"kontext_cloud_status failed: {e}")
+
+        elif tool_name == "kontext_cloud_link":
+            try:
+                from cloud.daemon import link_workspace
+
+                label = args.get("label") or os.environ.get("COMPUTERNAME") or "Device"
+                status = link_workspace(
+                    _get_db(),
+                    server_url=args.get("server_url", ""),
+                    workspace_id=args.get("workspace_id", ""),
+                    label=label,
+                    device_class=args.get("device_class", "interactive"),
+                    device_id=args.get("device_id"),
+                    workspace_name=args.get("workspace_name"),
+                    recovery_key_id=args.get("recovery_key_id"),
+                )
+                lines = [
+                    "Cloud sync linked.",
+                    f"Server: {status.get('server_url', '')}",
+                    f"Workspace: {status.get('workspace_id', '')}",
+                    f"Device: {status.get('device_id', '')}",
+                ]
+                return _mcp_result(req_id, "\n".join(lines))
+            except ValueError as e:
+                return _mcp_result(req_id, f"Cloud sync not linked: {e}")
+            except Exception as e:
+                return _mcp_error(req_id, f"kontext_cloud_link failed: {e}")
+
+        elif tool_name == "kontext_cloud_sync":
+            try:
+                from cloud.daemon import sync_once
+
+                result = sync_once(_get_db(), limit=max(1, min(int(args.get("limit", 500) or 500), 5000)))
+                lines = [
+                    "Cloud sync complete.",
+                    f"Pushed {result.get('pushed', 0)} history ops.",
+                    f"Pulled {result.get('pulled', 0)} history ops.",
+                    f"Cursor: {result.get('cursor', '') or '(empty)'}",
+                ]
+                return _mcp_result(req_id, "\n".join(lines))
+            except ValueError:
+                return _mcp_result(req_id, "Cloud sync not linked.")
+            except Exception as e:
+                return _mcp_error(req_id, f"kontext_cloud_sync failed: {e}")
+
+        elif tool_name == "kontext_cloud_recover":
+            try:
+                from cloud.daemon import recover_workspace
+
+                result = recover_workspace(_get_db(), limit=max(1, min(int(args.get("limit", 500) or 500), 5000)))
+                lines = [
+                    "Cloud recovery complete.",
+                    f"Recovered {result.get('recovered', 0)} history ops.",
+                    f"Cursor: {result.get('cursor', '') or '(empty)'}",
+                ]
+                return _mcp_result(req_id, "\n".join(lines))
+            except ValueError:
+                return _mcp_result(req_id, "Cloud sync not linked.")
+            except Exception as e:
+                return _mcp_error(req_id, f"kontext_cloud_recover failed: {e}")
         elif tool_name == "kontext_conflicts":
             try:
                 db = _get_db()
@@ -880,7 +1027,7 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                 db = _get_db()
                 query = args.get("search", "")
                 hours = args.get("hours")
-                limit = min(int(args.get("limit", 20) or 20), 100)
+                limit = max(1, min(int(args.get("limit", 20) or 20), 100))
 
                 if query:
                     results = db.search_prompts(query=query, limit=limit, hours=hours)
@@ -896,7 +1043,7 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                 for p in results:
                     ts = str(p.get("created_at", ""))[:16]
                     content = p.get("content", "")
-                    preview = (content[:100] + "…") if len(content) > 100 else content
+                    preview = (content[:100] + "...") if len(content) > 100 else content
                     lines.append(f"- `{ts}` {preview}")
 
                 _logger.info(f"PROMPTS: {len(results)} results | search={query[:40]} hours={hours}")
@@ -956,3 +1103,5 @@ if __name__ == "__main__":
             print("No memory directory found.")
     else:
         main()
+
+

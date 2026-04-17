@@ -1,0 +1,17 @@
+{
+    email {$ACME_EMAIL}
+    admin off
+}
+
+{$KONTEXT_DOMAIN} {
+    encode gzip zstd
+
+    reverse_proxy kontext:8080 {
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-Host {host}
+        header_up X-Forwarded-For {remote_host}
+        transport http {
+            versions h1 h2c
+        }
+    }
+}

@@ -6,12 +6,95 @@ Single source of truth for all memory entries, relations, conflicts, and session
 Flat markdown files are generated FROM this database, not the other way around.
 """
 
-import sqlite3
+import json
 import os
+import hashlib
+import sqlite3
+import uuid
 from datetime import datetime, timezone
 from collections import deque
 from pathlib import Path
 import struct
+import shutil
+
+
+def _default_db_path() -> str:
+    """Return the runtime DB path outside the source tree unless explicitly overridden."""
+    override = os.environ.get("KONTEXT_DB_PATH")
+    if override:
+        return str(Path(override).expanduser())
+
+    data_root = os.environ.get("KONTEXT_DATA_DIR")
+    if data_root:
+        base = Path(data_root).expanduser()
+    elif os.name == "nt" and os.environ.get("APPDATA"):
+        base = Path(os.environ["APPDATA"]) / "Kontext"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "kontext"
+
+    base.mkdir(parents=True, exist_ok=True)
+    target = base / "kontext.db"
+    legacy = Path(__file__).parent / "kontext.db"
+
+    if not target.exists() and legacy.exists():
+        try:
+            source = sqlite3.connect(str(legacy))
+            try:
+                dest = sqlite3.connect(str(target))
+                try:
+                    source.backup(dest)
+                finally:
+                    dest.close()
+            finally:
+                source.close()
+        except sqlite3.Error:
+            try:
+                shutil.copy2(legacy, target)
+            except OSError:
+                pass
+
+    return str(target)
+
+
+def _normalize_workspace(workspace: str = "") -> str:
+    """Canonicalize workspace identifiers so slash style changes still match."""
+    if not workspace:
+        return ""
+    try:
+        raw = str(Path(workspace).expanduser())
+    except Exception:
+        raw = str(workspace)
+    return os.path.normcase(os.path.normpath(raw)).replace("\\", "/")
+
+
+def _workspace_session_path(workspace: str = "") -> Path:
+    """Return the fallback session file path for a specific workspace."""
+    if not workspace:
+        return Path.home() / ".claude" / "_last_session.md"
+    try:
+        base = Path(workspace).expanduser().name or "workspace"
+    except Exception:
+        base = "workspace"
+    safe_base = "".join(ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in base).strip("-")
+    if not safe_base:
+        safe_base = "workspace"
+    digest = hashlib.sha1(workspace.encode("utf-8")).hexdigest()[:12]
+    return Path.home() / ".claude" / "sessions" / f"{safe_base}-{digest}.md"
+
+
+def _cloud_state_path(db_path: str) -> Path:
+    """Return the adjacent cloud-link state path for a DB file."""
+    return Path(db_path).with_suffix(".cloud.json")
+
+
+def _utc_timestamp() -> str:
+    """Return a stable UTC timestamp for sync envelopes."""
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _escape_like(value: str) -> str:
+    """Escape LIKE wildcards so user searches stay literal."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 # --- Schema migrations ---
@@ -161,6 +244,129 @@ def _migration_7_session_intelligence(conn):
             conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} TEXT DEFAULT ''")
 
 
+def _migration_8_hook_session_id(conn):
+    """Associate hook-generated session summaries with Claude hook session IDs."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+    if "hook_session_id" not in cols:
+        conn.execute("ALTER TABLE sessions ADD COLUMN hook_session_id TEXT DEFAULT ''")
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_hook_session_id
+            ON sessions(hook_session_id)
+            WHERE hook_session_id != ''
+    """)
+
+
+def _migration_9_session_workspace(conn):
+    """Store workspace identity so task restore is scoped instead of global."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+    if "workspace" not in cols:
+        conn.execute("ALTER TABLE sessions ADD COLUMN workspace TEXT DEFAULT ''")
+
+
+def _migration_10_cloud_identity(conn):
+    """Add workspace, device, and manifest tables for cloud sync."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS workspaces (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            recovery_key_id TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS devices (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            label TEXT NOT NULL,
+            device_class TEXT NOT NULL CHECK(device_class IN ('interactive', 'server')),
+            public_key BLOB NOT NULL,
+            enrolled_at TEXT DEFAULT (datetime('now')),
+            revoked_at TEXT DEFAULT NULL,
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE TABLE IF NOT EXISTS sync_manifests (
+            workspace_id TEXT PRIMARY KEY,
+            schema_version INTEGER NOT NULL,
+            embedding_model TEXT NOT NULL,
+            ranking_version TEXT NOT NULL,
+            prompt_routing_version TEXT NOT NULL,
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+    """)
+
+
+def _migration_11_cloud_ops(conn):
+    """Add append-only history ops and per-device sync cursors."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS history_ops (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            device_id TEXT NOT NULL,
+            op_kind TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            payload BLOB NOT NULL,
+            created_at TEXT NOT NULL,
+            applied_at TEXT DEFAULT NULL,
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(device_id) REFERENCES devices(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_history_ops_workspace_created
+            ON history_ops(workspace_id, created_at, id);
+        CREATE TABLE IF NOT EXISTS sync_cursors (
+            workspace_id TEXT NOT NULL,
+            device_id TEXT NOT NULL,
+            lane TEXT NOT NULL CHECK(lane IN ('history', 'canonical')),
+            cursor TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, device_id, lane),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(device_id) REFERENCES devices(id)
+        );
+    """)
+
+
+def _migration_13_workspace_auth(conn):
+    """Add bearer-token auth columns to workspaces and harden revocation semantics."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(workspaces)").fetchall()}
+    if "api_token_hash" not in cols:
+        conn.execute("ALTER TABLE workspaces ADD COLUMN api_token_hash TEXT DEFAULT NULL")
+    if "api_token_salt" not in cols:
+        conn.execute("ALTER TABLE workspaces ADD COLUMN api_token_salt TEXT DEFAULT NULL")
+
+
+def _migration_12_canonical_objects(conn):
+    """Add canonical object and revision tables for curated memory sync."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS canonical_objects (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            object_type TEXT NOT NULL,
+            head_revision TEXT NOT NULL DEFAULT '',
+            tombstoned INTEGER DEFAULT 0,
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE TABLE IF NOT EXISTS canonical_revisions (
+            id TEXT PRIMARY KEY,
+            object_id TEXT NOT NULL,
+            parent_revision TEXT DEFAULT NULL,
+            device_id TEXT NOT NULL,
+            payload BLOB NOT NULL,
+            created_at TEXT NOT NULL,
+            accepted INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY(object_id) REFERENCES canonical_objects(id),
+            FOREIGN KEY(device_id) REFERENCES devices(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_canonical_revisions_object_created
+            ON canonical_revisions(object_id, created_at, id);
+        CREATE TABLE IF NOT EXISTS snapshots (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            manifest_hash TEXT NOT NULL,
+            blob_path TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+    """)
+
+
 MIGRATIONS = [
     (1, _migration_1_session_summary_cols),
     (2, _migration_2_dedup_and_unique_indexes),
@@ -169,6 +375,12 @@ MIGRATIONS = [
     (5, _migration_5_tool_events),
     (6, _migration_6_user_prompts),
     (7, _migration_7_session_intelligence),
+    (8, _migration_8_hook_session_id),
+    (9, _migration_9_session_workspace),
+    (10, _migration_10_cloud_identity),
+    (11, _migration_11_cloud_ops),
+    (12, _migration_12_canonical_objects),
+    (13, _migration_13_workspace_auth),
 ]
 LATEST_SCHEMA_VERSION = max(v for v, _ in MIGRATIONS)
 
@@ -210,7 +422,7 @@ class KontextDB:
 
     def __init__(self, db_path: str = None):
         if db_path is None:
-            db_path = str(Path(__file__).parent / "kontext.db")
+            db_path = _default_db_path()
         self.db_path = db_path
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
@@ -220,7 +432,7 @@ class KontextDB:
         self.conn.execute("PRAGMA foreign_keys=ON")
         self._in_batch = False  # True inside a transaction() context — suppresses _execute auto-commits
         self._embed_cache = None  # Lazy-built dict: {id: (file, fact, source, grade, tier, vec_tuple)}
-        self._fts_enabled = False  # set after _create_tables → _migrate runs
+        self._fts_enabled = False  # set after _create_tables â†’ _migrate runs
         self._create_tables()
         self._fts_enabled = self.conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='entries_fts'"
@@ -270,6 +482,8 @@ class KontextDB:
 
             CREATE TABLE IF NOT EXISTS sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                hook_session_id TEXT DEFAULT '',
+                workspace TEXT DEFAULT '',
                 project TEXT DEFAULT '',
                 status TEXT DEFAULT '',
                 next_step TEXT DEFAULT '',
@@ -347,19 +561,84 @@ class KontextDB:
         cursor = self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         return [row[0] for row in cursor.fetchall()]
 
+    def _load_cloud_link_state(self) -> dict:
+        """Load adjacent cloud-link state when this DB is enrolled in sync."""
+        path = _cloud_state_path(self.db_path)
+        if not path.exists():
+            return {}
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
+
+        workspace_id = str(state.get("workspace_id", "")).strip()
+        device_id = str(state.get("device_id", "")).strip()
+        if not workspace_id or not device_id:
+            return {}
+
+        workspace = self.conn.execute(
+            "SELECT 1 FROM workspaces WHERE id = ?",
+            (workspace_id,),
+        ).fetchone()
+        device = self.conn.execute(
+            "SELECT 1 FROM devices WHERE id = ? AND workspace_id = ?",
+            (device_id, workspace_id),
+        ).fetchone()
+        if workspace is None or device is None:
+            return {}
+        return {
+            "workspace_id": workspace_id,
+            "device_id": device_id,
+        }
+
+    def _maybe_append_local_history_op(self, op_kind: str, entity_type: str,
+                                       entity_id: str, payload: dict) -> bool:
+        """Append a linked local write to the history lane when sync is active."""
+        state = self._load_cloud_link_state()
+        if not state:
+            return False
+
+        from cloud.codec import pack_payload
+
+        return self.append_history_op(
+            op_id=f"op-{uuid.uuid4().hex}",
+            workspace_id=state["workspace_id"],
+            device_id=state["device_id"],
+            op_kind=op_kind,
+            entity_type=entity_type,
+            entity_id=str(entity_id),
+            payload=pack_payload(payload),
+            created_at=_utc_timestamp(),
+        )
+
     # --- Entries ---
 
-    def add_entry(self, file: str, fact: str, source: str = "", grade: float = 5, tier: str = "active") -> int:
+    def add_entry(self, file: str, fact: str, source: str = "", grade: float = 5,
+                  tier: str = "active", emit_cloud: bool = True) -> int:
         """Add an entry. Race-safe via UNIQUE(file, fact) index + INSERT OR IGNORE."""
-        self._execute(
-            "INSERT OR IGNORE INTO entries (file, fact, source, grade, tier) VALUES (?, ?, ?, ?, ?)",
-            (file, fact, source, grade, tier)
-        )
-        row = self.conn.execute(
-            "SELECT id FROM entries WHERE file = ? AND fact = ?", (file, fact)
-        ).fetchone()
-        return row[0] if row else 0
-
+        with self.transaction():
+            cursor = self._execute(
+                "INSERT OR IGNORE INTO entries (file, fact, source, grade, tier) VALUES (?, ?, ?, ?, ?)",
+                (file, fact, source, grade, tier)
+            )
+            row = self.conn.execute(
+                "SELECT id FROM entries WHERE file = ? AND fact = ?", (file, fact)
+            ).fetchone()
+            entry_id = row[0] if row else 0
+            if cursor.rowcount > 0 and emit_cloud and entry_id:
+                self._maybe_append_local_history_op(
+                    op_kind="entry.written",
+                    entity_type="entry",
+                    entity_id=str(entry_id),
+                    payload={
+                        "file": file,
+                        "fact": fact,
+                        "source": source,
+                        "grade": grade,
+                        "tier": tier,
+                    },
+                )
+            return entry_id
     def update_entry(self, entry_id: int, **kwargs):
         """Update specific fields of an entry."""
         allowed = {"fact", "source", "grade", "tier", "file", "embedding"}
@@ -371,7 +650,7 @@ class KontextDB:
         values = list(updates.values()) + [entry_id]
         self._execute(f"UPDATE entries SET {set_clause} WHERE id = ?", values)
         if "fact" in updates or "file" in updates:
-            self._embed_cache = None  # fact text changed → cached copy stale
+            self._embed_cache = None  # fact text changed â†’ cached copy stale
 
     def get_entry(self, entry_id: int) -> dict | None:
         row = self.conn.execute("SELECT * FROM entries WHERE id = ?", (entry_id,)).fetchone()
@@ -441,9 +720,9 @@ class KontextDB:
             try:
                 return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
             except sqlite3.OperationalError:
-                pass  # Trigram <3 chars or other FTS edge case → fall through to LIKE
+                pass  # Trigram <3 chars or other FTS edge case â†’ fall through to LIKE
 
-        safe_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        safe_query = _escape_like(query)
         sql = "SELECT * FROM entries WHERE fact LIKE ? ESCAPE '\\'"
         params = [f"%{safe_query}%"]
         if file:
@@ -493,25 +772,56 @@ class KontextDB:
     # --- Sessions ---
 
     def save_session(self, project: str = "", status: str = "", next_step: str = "",
-                     key_decisions: str = "", summary: str = "", files_touched: str = ""):
-        self._execute(
-            "INSERT INTO sessions (project, status, next_step, key_decisions, summary, files_touched) VALUES (?, ?, ?, ?, ?, ?)",
-            (project, status, next_step, key_decisions, summary, files_touched)
-        )
-        self._export_last_session(project, status, next_step, key_decisions, summary, files_touched)
+                     key_decisions: str = "", summary: str = "", files_touched: str = "",
+                     workspace: str = "", emit_cloud: bool = True):
+        workspace_value = _normalize_workspace(workspace)
+        with self.transaction():
+            cursor = self._execute(
+                "INSERT INTO sessions (workspace, project, status, next_step, key_decisions, summary, files_touched) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (workspace_value, project, status, next_step, key_decisions, summary, files_touched)
+            )
+            session_id = cursor.lastrowid or 0
+            self._export_last_session(
+                project,
+                status,
+                next_step,
+                key_decisions,
+                summary,
+                files_touched,
+                workspace=workspace_value,
+            )
+            if emit_cloud and session_id:
+                self._maybe_append_local_history_op(
+                    op_kind="session.saved",
+                    entity_type="session",
+                    entity_id=str(session_id),
+                    payload={
+                        "project": project,
+                        "status": status,
+                        "next_step": next_step,
+                        "key_decisions": key_decisions,
+                        "summary": summary,
+                        "files_touched": files_touched,
+                        "workspace": workspace_value,
+                    },
+                )
+            return session_id
 
     def _export_last_session(self, project: str, status: str, next_step: str,
-                             key_decisions: str, summary: str = "", files_touched: str = ""):
-        """Write _last_session.md so SessionStart shell hooks can read it without MCP."""
+                             key_decisions: str, summary: str = "", files_touched: str = "",
+                             workspace: str = ""):
+        """Write a workspace-scoped fallback session file."""
         # Only export when using the production database — test DBs must not
         # overwrite real session state (the cause of the "Project 9" bug).
-        prod_db = str(Path(__file__).parent / "kontext.db")
+        prod_db = _default_db_path()
         if os.path.abspath(self.db_path) != os.path.abspath(prod_db):
             return
-        target = Path.home() / ".claude" / "_last_session.md"
+        workspace_value = _normalize_workspace(workspace)
+        target = _workspace_session_path(workspace_value)
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         parts = [
             f"---\ndate: {today}",
+            f"workspace: {workspace_value}",
             f"project: {project}",
             f"status: {status}",
             f"next: {next_step}",
@@ -528,8 +838,17 @@ class KontextDB:
         except Exception:
             pass  # Non-critical — DB is the source of truth
 
-    def get_latest_session(self) -> dict | None:
-        row = self.conn.execute("SELECT * FROM sessions ORDER BY id DESC LIMIT 1").fetchone()
+    def get_latest_session(self, workspace: str = "") -> dict | None:
+        workspace_value = _normalize_workspace(workspace)
+        if workspace_value:
+            row = self.conn.execute(
+                "SELECT * FROM sessions WHERE workspace = ? ORDER BY id DESC LIMIT 1",
+                (workspace_value,),
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT * FROM sessions WHERE workspace = '' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
         return dict(row) if row else None
 
     def purge_old_sessions(self, keep: int = 20):
@@ -679,7 +998,7 @@ class KontextDB:
         # Stopwords + common entity nouns that shouldn't trigger on their own
         noise_words = {
             "the", "and", "for", "with", "from", "that", "this", "was", "are",
-            "has", "have", "been", "user", "ionut", "ionuț", "claude", "vocality",
+            "has", "have", "been", "user", "ionut", "ionuÈ›", "claude", "vocality",
             "this", "that", "with", "into", "over", "than", "then", "when", "what",
             "which", "they", "them", "their", "there", "would", "could", "should",
         }
@@ -715,7 +1034,7 @@ class KontextDB:
                     for e2 in file_entries[i + 1:]:
                         if e1[2] == e2[2]:
                             continue
-                        # Both dated → timeline evolution, not a conflict
+                        # Both dated â†’ timeline evolution, not a conflict
                         if e1_dated and is_dated(e2[3], e2[2]):
                             continue
                         pair_key = (min(e1[0], e2[0]), max(e1[0], e2[0]))
@@ -839,14 +1158,32 @@ class KontextDB:
     # -------------------------------------------------------------------------
 
     def add_tool_event(self, session_id: str, tool_name: str, summary: str,
-                       file_path: str = None, grade: float = 5.0) -> int:
+                       file_path: str = None, grade: float = 5.0,
+                       emit_cloud: bool = True) -> int:
         """Record a PostToolUse event. Returns the new row id."""
-        cursor = self._execute(
-            "INSERT INTO tool_events (session_id, tool_name, summary, file_path, grade)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (session_id or "", tool_name, summary[:500], file_path, grade),
-        )
-        return cursor.lastrowid
+        session_value = session_id or ""
+        summary_value = (summary or "")[:500]
+        with self.transaction():
+            cursor = self._execute(
+                "INSERT INTO tool_events (session_id, tool_name, summary, file_path, grade)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (session_value, tool_name, summary_value, file_path, grade),
+            )
+            event_id = cursor.lastrowid or 0
+            if emit_cloud and event_id:
+                self._maybe_append_local_history_op(
+                    op_kind="tool.logged",
+                    entity_type="tool_event",
+                    entity_id=str(event_id),
+                    payload={
+                        "session_id": session_value,
+                        "tool_name": tool_name,
+                        "summary": summary_value,
+                        "file_path": file_path,
+                        "grade": grade,
+                    },
+                )
+            return event_id
 
     def get_tool_events(self, session_id: str = None, promoted: bool = False,
                         since_hours: float = None, limit: int = 100) -> list[dict]:
@@ -884,15 +1221,30 @@ class KontextDB:
     # User prompts
     # -------------------------------------------------------------------------
 
-    def add_user_prompt(self, session_id: str, content: str) -> int:
+    def add_user_prompt(self, session_id: str, content: str,
+                        emit_cloud: bool = True) -> int:
         """Log a user prompt. Content is hard-capped at 2000 chars. Returns row id."""
-        if len(content) > 2000:
-            content = content[:2000]
-        cursor = self._execute(
-            "INSERT INTO user_prompts (session_id, content) VALUES (?, ?)",
-            (session_id or "", content),
-        )
-        return cursor.lastrowid
+        content_value = content or ""
+        if len(content_value) > 2000:
+            content_value = content_value[:2000]
+        session_value = session_id or ""
+        with self.transaction():
+            cursor = self._execute(
+                "INSERT INTO user_prompts (session_id, content) VALUES (?, ?)",
+                (session_value, content_value),
+            )
+            prompt_id = cursor.lastrowid or 0
+            if emit_cloud and prompt_id:
+                self._maybe_append_local_history_op(
+                    op_kind="prompt.logged",
+                    entity_type="prompt",
+                    entity_id=str(prompt_id),
+                    payload={
+                        "session_id": session_value,
+                        "content": content_value,
+                    },
+                )
+            return prompt_id
 
     def search_prompts(self, query: str = "", limit: int = 20,
                        hours: float = None) -> list[dict]:
@@ -911,18 +1263,27 @@ class KontextDB:
 
         if fts_available and query:
             safe_q = '"' + query.replace('"', '""') + '"'
-            rows = self.conn.execute(
-                f"SELECT up.* FROM user_prompts up"
-                f" JOIN user_prompts_fts fts ON fts.rowid = up.id"
-                f" WHERE user_prompts_fts MATCH ? {fts_time_filter}"
-                f" ORDER BY up.created_at DESC LIMIT ?",
-                [safe_q] + params + [limit],
-            ).fetchall()
+            try:
+                rows = self.conn.execute(
+                    f"SELECT up.* FROM user_prompts up"
+                    f" JOIN user_prompts_fts fts ON fts.rowid = up.id"
+                    f" WHERE user_prompts_fts MATCH ? {fts_time_filter}"
+                    f" ORDER BY up.created_at DESC LIMIT ?",
+                    [safe_q] + params + [limit],
+                ).fetchall()
+            except sqlite3.OperationalError:
+                safe_query = _escape_like(query)
+                rows = self.conn.execute(
+                    f"SELECT * FROM user_prompts WHERE content LIKE ? ESCAPE '\\' {time_filter}"
+                    f" ORDER BY created_at DESC LIMIT ?",
+                    [f"%{safe_query}%"] + params + [limit],
+                ).fetchall()
         elif query:
+            safe_query = _escape_like(query)
             rows = self.conn.execute(
-                f"SELECT * FROM user_prompts WHERE content LIKE ? {time_filter}"
+                f"SELECT * FROM user_prompts WHERE content LIKE ? ESCAPE '\\' {time_filter}"
                 f" ORDER BY created_at DESC LIMIT ?",
-                [f"%{query}%"] + params + [limit],
+                [f"%{safe_query}%"] + params + [limit],
             ).fetchall()
         else:
             rows = self.conn.execute(
@@ -976,6 +1337,584 @@ class KontextDB:
         return {row["file"]: dict(row) for row in rows}
 
     # -------------------------------------------------------------------------
+    # Cloud sync foundations
+    # -------------------------------------------------------------------------
+
+    def create_workspace(self, workspace_id: str, name: str, recovery_key_id: str,
+                         api_token_hash: str | None = None,
+                         api_token_salt: str | None = None) -> None:
+        """Create or update a cloud-sync workspace.
+
+        api_token_hash/salt are only persisted on first creation. Subsequent
+        upserts preserve whatever token was first issued — a workspace's token
+        is fixed for its lifetime unless explicitly rotated.
+        """
+        existing = self.conn.execute(
+            "SELECT api_token_hash, api_token_salt FROM workspaces WHERE id = ?",
+            (workspace_id,),
+        ).fetchone()
+        if existing and existing["api_token_hash"]:
+            hash_value = existing["api_token_hash"]
+            salt_value = existing["api_token_salt"]
+        else:
+            hash_value = api_token_hash
+            salt_value = api_token_salt
+        self._execute(
+            """
+            INSERT INTO workspaces (id, name, recovery_key_id, api_token_hash, api_token_salt)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                recovery_key_id = excluded.recovery_key_id,
+                api_token_hash = COALESCE(workspaces.api_token_hash, excluded.api_token_hash),
+                api_token_salt = COALESCE(workspaces.api_token_salt, excluded.api_token_salt)
+            """,
+            (workspace_id, name, recovery_key_id, hash_value, salt_value),
+        )
+
+    def get_workspace_token_record(self, workspace_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT api_token_hash, api_token_salt FROM workspaces WHERE id = ?",
+            (workspace_id,),
+        ).fetchone()
+        if row is None or not row["api_token_hash"]:
+            return None
+        return {"hash": row["api_token_hash"], "salt": row["api_token_salt"]}
+
+    def upsert_sync_manifest(self, workspace_id: str, schema_version: int,
+                             embedding_model: str, ranking_version: str,
+                             prompt_routing_version: str) -> None:
+        """Store the manifest that pins behavior across devices."""
+        self._execute(
+            """
+            INSERT INTO sync_manifests
+                (workspace_id, schema_version, embedding_model, ranking_version, prompt_routing_version)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(workspace_id) DO UPDATE SET
+                schema_version = excluded.schema_version,
+                embedding_model = excluded.embedding_model,
+                ranking_version = excluded.ranking_version,
+                prompt_routing_version = excluded.prompt_routing_version
+            """,
+            (workspace_id, schema_version, embedding_model, ranking_version, prompt_routing_version),
+        )
+
+    def register_device(self, device_id: str, workspace_id: str, label: str,
+                        device_class: str, public_key: bytes,
+                        allow_unrevoke: bool = False) -> None:
+        """Create or update a device enrolled in a workspace.
+
+        Pass allow_unrevoke=True only from a privileged path that has already
+        verified a fresh enrollment credential. Default behavior preserves
+        revoked_at on conflict, so routine replays (sync metadata, snapshot
+        restore) cannot silently resurrect a revoked device.
+        """
+        if allow_unrevoke:
+            self._execute(
+                """
+                INSERT INTO devices (id, workspace_id, label, device_class, public_key)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    workspace_id = excluded.workspace_id,
+                    label = excluded.label,
+                    device_class = excluded.device_class,
+                    public_key = excluded.public_key,
+                    revoked_at = NULL
+                """,
+                (device_id, workspace_id, label, device_class, public_key),
+            )
+        else:
+            self._execute(
+                """
+                INSERT INTO devices (id, workspace_id, label, device_class, public_key)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    workspace_id = excluded.workspace_id,
+                    label = excluded.label,
+                    device_class = excluded.device_class,
+                    public_key = excluded.public_key
+                """,
+                (device_id, workspace_id, label, device_class, public_key),
+            )
+
+    def is_device_revoked(self, device_id: str) -> bool:
+        row = self.conn.execute(
+            "SELECT revoked_at FROM devices WHERE id = ?",
+            (device_id,),
+        ).fetchone()
+        return bool(row and row["revoked_at"] is not None)
+
+    def revoke_device(self, workspace_id: str, device_id: str) -> None:
+        """Mark a device revoked without deleting its history."""
+        self._execute(
+            """
+            UPDATE devices
+               SET revoked_at = COALESCE(revoked_at, datetime('now'))
+             WHERE workspace_id = ? AND id = ?
+            """,
+            (workspace_id, device_id),
+        )
+
+    def append_history_op(self, op_id: str, workspace_id: str, device_id: str,
+                          op_kind: str, entity_type: str, entity_id: str,
+                          payload: bytes, created_at: str) -> bool:
+        """Append a history op once; duplicate ids are ignored."""
+        cursor = self._execute(
+            """
+            INSERT OR IGNORE INTO history_ops
+                (id, workspace_id, device_id, op_kind, entity_type, entity_id, payload, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (op_id, workspace_id, device_id, op_kind, entity_type, entity_id, payload, created_at),
+        )
+        return cursor.rowcount > 0
+
+    def list_history_ops_since(self, workspace_id: str, after_cursor: str,
+                               limit: int = 500) -> list[dict]:
+        """List history ops after a cursor, ordered by insertion sequence."""
+        if after_cursor:
+            rows = self.conn.execute(
+                """
+                SELECT h.*
+                  FROM history_ops h
+                 WHERE h.workspace_id = ?
+                   AND h.rowid > COALESCE(
+                       (SELECT rowid FROM history_ops WHERE workspace_id = ? AND id = ?),
+                       0
+                   )
+                 ORDER BY h.rowid ASC
+                 LIMIT ?
+                """,
+                (workspace_id, workspace_id, after_cursor, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """
+                SELECT * FROM history_ops
+                 WHERE workspace_id = ?
+                 ORDER BY rowid ASC
+                 LIMIT ?
+                """,
+                (workspace_id, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def advance_sync_cursor(self, workspace_id: str, device_id: str,
+                            lane: str, cursor: str) -> None:
+        """Persist the latest acknowledged cursor for a device and lane."""
+        self._execute(
+            """
+            INSERT INTO sync_cursors (workspace_id, device_id, lane, cursor)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(workspace_id, device_id, lane) DO UPDATE SET
+                cursor = excluded.cursor
+            """,
+            (workspace_id, device_id, lane, cursor),
+        )
+
+    def append_canonical_revision(self, workspace_id: str, object_id: str,
+                                  object_type: str, revision_id: str,
+                                  parent_revision: str | None, device_id: str,
+                                  payload: bytes, created_at: str,
+                                  accepted: bool) -> None:
+        """Append a canonical revision and update head when accepted."""
+        with self.transaction():
+            self._execute(
+                """
+                INSERT INTO canonical_objects (id, workspace_id, object_type, head_revision)
+                VALUES (?, ?, ?, '')
+                ON CONFLICT(id) DO NOTHING
+                """,
+                (object_id, workspace_id, object_type),
+            )
+            self._execute(
+                """
+                INSERT OR IGNORE INTO canonical_revisions
+                    (id, object_id, parent_revision, device_id, payload, created_at, accepted)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (revision_id, object_id, parent_revision, device_id, payload, created_at, 1 if accepted else 0),
+            )
+            if accepted:
+                self._execute(
+                    "UPDATE canonical_objects SET head_revision = ? WHERE id = ?",
+                    (revision_id, object_id),
+                )
+
+    def list_canonical_revisions_since(self, workspace_id: str, after_cursor: str,
+                                       limit: int = 500) -> list[dict]:
+        """List canonical revisions after a cursor, ordered by insertion sequence."""
+        if after_cursor:
+            rows = self.conn.execute(
+                """
+                SELECT r.*, o.workspace_id, o.object_type
+                  FROM canonical_revisions r
+                  JOIN canonical_objects o ON o.id = r.object_id
+                 WHERE o.workspace_id = ?
+                   AND r.rowid > COALESCE(
+                       (
+                           SELECT r2.rowid
+                             FROM canonical_revisions r2
+                             JOIN canonical_objects o2 ON o2.id = r2.object_id
+                            WHERE o2.workspace_id = ? AND r2.id = ?
+                       ),
+                       0
+                   )
+                 ORDER BY r.rowid ASC
+                 LIMIT ?
+                """,
+                (workspace_id, workspace_id, after_cursor, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """
+                SELECT r.*, o.workspace_id, o.object_type
+                  FROM canonical_revisions r
+                  JOIN canonical_objects o ON o.id = r.object_id
+                 WHERE o.workspace_id = ?
+                 ORDER BY r.rowid ASC
+                 LIMIT ?
+                """,
+                (workspace_id, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def _snapshot_root(self) -> Path:
+        base = Path(self.db_path)
+        return base.with_name(f"{base.stem}-snapshots")
+
+    def _snapshot_path(self, workspace_id: str, snapshot_id: str) -> Path:
+        safe_workspace = "".join(
+            ch if ch.isalnum() or ch in ("-", "_") else "-"
+            for ch in workspace_id
+        ).strip("-") or "workspace"
+        return self._snapshot_root() / safe_workspace / f"{snapshot_id}.msgpack.zst"
+
+    def build_workspace_snapshot(self, workspace_id: str) -> dict:
+        from cloud.codec import unpack_payload
+
+        workspace = self.conn.execute(
+            "SELECT * FROM workspaces WHERE id = ?",
+            (workspace_id,),
+        ).fetchone()
+        manifest = self.conn.execute(
+            "SELECT * FROM sync_manifests WHERE workspace_id = ?",
+            (workspace_id,),
+        ).fetchone()
+
+        devices = []
+        for row in self.conn.execute(
+            "SELECT * FROM devices WHERE workspace_id = ? ORDER BY enrolled_at ASC, id ASC",
+            (workspace_id,),
+        ).fetchall():
+            item = dict(row)
+            item["public_key"] = (
+                row["public_key"].decode("utf-8", errors="ignore")
+                if row["public_key"] is not None
+                else ""
+            )
+            devices.append(item)
+
+        entries = [
+            dict(row)
+            for row in self.conn.execute(
+                """
+                SELECT id, file, fact, source, grade, tier, created_at, updated_at, last_accessed,
+                       COALESCE(access_count, 0) AS access_count
+                  FROM entries
+                 ORDER BY id ASC
+                """
+            ).fetchall()
+        ]
+        sessions = [
+            dict(row)
+            for row in self.conn.execute(
+                "SELECT * FROM sessions ORDER BY id ASC"
+            ).fetchall()
+        ]
+        prompts = [
+            dict(row)
+            for row in self.conn.execute(
+                "SELECT * FROM user_prompts ORDER BY id ASC"
+            ).fetchall()
+        ]
+        tool_events = [
+            dict(row)
+            for row in self.conn.execute(
+                "SELECT * FROM tool_events ORDER BY id ASC"
+            ).fetchall()
+        ]
+        canonical_objects = [
+            dict(row)
+            for row in self.conn.execute(
+                "SELECT * FROM canonical_objects WHERE workspace_id = ? ORDER BY id ASC",
+                (workspace_id,),
+            ).fetchall()
+        ]
+
+        canonical_revisions = []
+        for row in self.conn.execute(
+            """
+            SELECT r.id, r.object_id, r.parent_revision, r.device_id, r.created_at, r.accepted, r.payload
+              FROM canonical_revisions r
+              JOIN canonical_objects o ON o.id = r.object_id
+             WHERE o.workspace_id = ?
+             ORDER BY r.created_at ASC, r.id ASC
+            """,
+            (workspace_id,),
+        ).fetchall():
+            item = dict(row)
+            item["payload"] = unpack_payload(row["payload"])
+            canonical_revisions.append(item)
+
+        history_cursor_row = self.conn.execute(
+            "SELECT id FROM history_ops WHERE workspace_id = ? ORDER BY rowid DESC LIMIT 1",
+            (workspace_id,),
+        ).fetchone()
+        canonical_cursor_row = self.conn.execute(
+            """
+            SELECT r.id
+              FROM canonical_revisions r
+              JOIN canonical_objects o ON o.id = r.object_id
+             WHERE o.workspace_id = ?
+             ORDER BY r.rowid DESC
+             LIMIT 1
+            """,
+            (workspace_id,),
+        ).fetchone()
+
+        return {
+            "workspace_id": workspace_id,
+            "workspace": dict(workspace) if workspace else {},
+            "manifest": dict(manifest) if manifest else {},
+            "devices": devices,
+            "entries": entries,
+            "sessions": sessions,
+            "user_prompts": prompts,
+            "tool_events": tool_events,
+            "canonical_objects": canonical_objects,
+            "canonical_revisions": canonical_revisions,
+            "history_cursor": history_cursor_row["id"] if history_cursor_row else "",
+            "canonical_cursor": canonical_cursor_row["id"] if canonical_cursor_row else "",
+        }
+
+    def create_snapshot(self, workspace_id: str) -> dict:
+        from cloud.codec import pack_payload
+
+        payload = self.build_workspace_snapshot(workspace_id)
+        manifest_hash = hashlib.sha256(
+            json.dumps(payload.get("manifest", {}), sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        snapshot_id = f"snap-{uuid.uuid4().hex[:12]}"
+        created_at = _utc_timestamp()
+        path = self._snapshot_path(workspace_id, snapshot_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(pack_payload(payload))
+        self._execute(
+            """
+            INSERT INTO snapshots (id, workspace_id, manifest_hash, blob_path, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (snapshot_id, workspace_id, manifest_hash, str(path), created_at),
+        )
+        return {
+            "snapshot_id": snapshot_id,
+            "workspace_id": workspace_id,
+            "manifest_hash": manifest_hash,
+            "created_at": created_at,
+            "history_cursor": payload.get("history_cursor", ""),
+            "canonical_cursor": payload.get("canonical_cursor", ""),
+            "status": "ok",
+        }
+
+    def get_latest_snapshot(self, workspace_id: str) -> dict | None:
+        from cloud.codec import unpack_payload
+
+        row = self.conn.execute(
+            "SELECT * FROM snapshots WHERE workspace_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+            (workspace_id,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        path = Path(row["blob_path"])
+        if not path.exists():
+            return None
+
+        snapshot = unpack_payload(path.read_bytes())
+        snapshot.update(
+            {
+                "snapshot_id": row["id"],
+                "workspace_id": row["workspace_id"],
+                "manifest_hash": row["manifest_hash"],
+                "created_at": row["created_at"],
+            }
+        )
+        return snapshot
+
+    def restore_workspace_snapshot(self, snapshot: dict) -> int:
+        from cloud.codec import pack_payload
+
+        workspace = snapshot.get("workspace") or {}
+        manifest = snapshot.get("manifest") or {}
+        devices = snapshot.get("devices") or []
+        entries = snapshot.get("entries") or []
+        sessions = snapshot.get("sessions") or []
+        prompts = snapshot.get("user_prompts") or []
+        tool_events = snapshot.get("tool_events") or []
+        canonical_objects = snapshot.get("canonical_objects") or []
+        canonical_revisions = snapshot.get("canonical_revisions") or []
+
+        with self.transaction():
+            if workspace:
+                self.create_workspace(
+                    workspace.get("id", snapshot.get("workspace_id", "")),
+                    workspace.get("name", ""),
+                    workspace.get("recovery_key_id", ""),
+                )
+            if manifest:
+                self.upsert_sync_manifest(
+                    workspace_id=manifest.get("workspace_id", snapshot.get("workspace_id", "")),
+                    schema_version=int(manifest.get("schema_version", 0)),
+                    embedding_model=manifest.get("embedding_model", ""),
+                    ranking_version=manifest.get("ranking_version", ""),
+                    prompt_routing_version=manifest.get("prompt_routing_version", ""),
+                )
+            for row in devices:
+                self.register_device(
+                    device_id=row.get("id", ""),
+                    workspace_id=row.get("workspace_id", snapshot.get("workspace_id", "")),
+                    label=row.get("label", ""),
+                    device_class=row.get("device_class", "interactive"),
+                    public_key=str(row.get("public_key", "")).encode("utf-8"),
+                )
+                if row.get("revoked_at"):
+                    self._execute(
+                        "UPDATE devices SET revoked_at = ? WHERE id = ? AND workspace_id = ?",
+                        (row["revoked_at"], row.get("id", ""), row.get("workspace_id", snapshot.get("workspace_id", ""))),
+                    )
+
+            self._execute("DELETE FROM canonical_revisions")
+            self._execute("DELETE FROM canonical_objects")
+            self._execute("DELETE FROM tool_events")
+            self._execute("DELETE FROM user_prompts")
+            self._execute("DELETE FROM sessions")
+            self._execute("DELETE FROM entries")
+
+            for row in entries:
+                self._execute(
+                    """
+                    INSERT OR REPLACE INTO entries
+                        (id, file, fact, source, grade, tier, created_at, updated_at, last_accessed, access_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row.get("id"),
+                        row.get("file", ""),
+                        row.get("fact", ""),
+                        row.get("source", ""),
+                        row.get("grade", 5),
+                        row.get("tier", "active"),
+                        row.get("created_at", ""),
+                        row.get("updated_at", row.get("created_at", "")),
+                        row.get("last_accessed", row.get("updated_at", row.get("created_at", ""))),
+                        row.get("access_count", 0),
+                    ),
+                )
+            for row in sessions:
+                self._execute(
+                    """
+                    INSERT OR REPLACE INTO sessions
+                        (id, hook_session_id, workspace, project, status, next_step, key_decisions,
+                         summary, files_touched, created_at, investigated, learned)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row.get("id"),
+                        row.get("hook_session_id", ""),
+                        row.get("workspace", ""),
+                        row.get("project", ""),
+                        row.get("status", ""),
+                        row.get("next_step", ""),
+                        row.get("key_decisions", ""),
+                        row.get("summary", ""),
+                        row.get("files_touched", ""),
+                        row.get("created_at", ""),
+                        row.get("investigated", ""),
+                        row.get("learned", ""),
+                    ),
+                )
+            for row in prompts:
+                self._execute(
+                    "INSERT OR REPLACE INTO user_prompts (id, session_id, content, created_at) VALUES (?, ?, ?, ?)",
+                    (
+                        row.get("id"),
+                        row.get("session_id", ""),
+                        row.get("content", ""),
+                        row.get("created_at", ""),
+                    ),
+                )
+            for row in tool_events:
+                self._execute(
+                    """
+                    INSERT OR REPLACE INTO tool_events
+                        (id, session_id, tool_name, summary, file_path, grade, promoted, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row.get("id"),
+                        row.get("session_id", ""),
+                        row.get("tool_name", ""),
+                        row.get("summary", ""),
+                        row.get("file_path"),
+                        row.get("grade", 5.0),
+                        row.get("promoted", 0),
+                        row.get("created_at", ""),
+                    ),
+                )
+            for row in canonical_objects:
+                self._execute(
+                    """
+                    INSERT OR REPLACE INTO canonical_objects
+                        (id, workspace_id, object_type, head_revision, tombstoned)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row.get("id", ""),
+                        row.get("workspace_id", snapshot.get("workspace_id", "")),
+                        row.get("object_type", ""),
+                        row.get("head_revision", ""),
+                        row.get("tombstoned", 0),
+                    ),
+                )
+            for row in canonical_revisions:
+                self._execute(
+                    """
+                    INSERT OR REPLACE INTO canonical_revisions
+                        (id, object_id, parent_revision, device_id, payload, created_at, accepted)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row.get("id", ""),
+                        row.get("object_id", ""),
+                        row.get("parent_revision"),
+                        row.get("device_id", ""),
+                        pack_payload(row.get("payload", {})),
+                        row.get("created_at", ""),
+                        1 if row.get("accepted") else 0,
+                    ),
+                )
+
+        self._embed_cache = None
+        return (
+            len(entries)
+            + len(sessions)
+            + len(prompts)
+            + len(tool_events)
+            + len(canonical_objects)
+            + len(canonical_revisions)
+        )
+    # -------------------------------------------------------------------------
     # Session utilities
     # -------------------------------------------------------------------------
 
@@ -985,6 +1924,41 @@ class KontextDB:
             "SELECT id FROM sessions ORDER BY id DESC LIMIT 1"
         ).fetchone()
         return row["id"] if row else None
+
+    def upsert_session_summary(self, hook_session_id: str, investigated: str = "",
+                               learned: str = "", files_touched: str = "",
+                               summary: str = "") -> int:
+        """Create/update the session row tied to a hook session ID."""
+        if not hook_session_id:
+            raise ValueError("hook_session_id is required")
+
+        row = self.conn.execute(
+            "SELECT id FROM sessions WHERE hook_session_id = ?",
+            (hook_session_id,),
+        ).fetchone()
+        if row:
+            self._execute(
+                """
+                UPDATE sessions
+                   SET investigated = ?,
+                       learned      = ?,
+                       files_touched = ?,
+                       summary = CASE WHEN summary = '' THEN ? ELSE summary END
+                 WHERE id = ?
+                """,
+                (investigated, learned, files_touched, summary, row["id"]),
+            )
+            return row["id"]
+
+        cursor = self._execute(
+            """
+            INSERT INTO sessions
+                (hook_session_id, investigated, learned, files_touched, summary)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (hook_session_id, investigated, learned, files_touched, summary),
+        )
+        return cursor.lastrowid
 
     def __enter__(self):
         return self

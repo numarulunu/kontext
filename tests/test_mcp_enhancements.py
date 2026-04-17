@@ -111,20 +111,19 @@ class TestKontextSearchIndexMode:
             )
         text = resp["result"]["content"][0]["text"]
         assert "%" in text
+        assert "facts" not in text
+        assert "tokens" not in text
 
-    def test_index_mode_empty_file_stats_degrades_gracefully(self, db, memory_dir, entries, tmp_path):
-        """If get_file_stats() returns empty (no entries), index mode still renders."""
+    def test_index_mode_stats_error_degrades_gracefully(self, db, memory_dir, entries):
+        """If get_file_stats() raises, index mode still renders."""
         from mcp_server import handle_request
-        empty_db = KontextDB(str(tmp_path / "empty.db"))
-        try:
-            with patch("mcp_server._get_db", return_value=empty_db):
+        with patch.object(db, "get_file_stats", side_effect=RuntimeError("boom")):
+            with patch("mcp_server._get_db", return_value=db):
                 resp = handle_request(
                     _req("kontext_search", {"query": "user identity", "mode": "index"}),
                     memory_dir, entries,
                 )
-            assert "result" in resp
-        finally:
-            empty_db.close()
+        assert "result" in resp
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +186,16 @@ class TestKontextPrompts:
         text = resp["result"]["content"][0]["text"]
         assert text.count("- `") == 1
 
+    def test_negative_limit_clamped_to_one(self, db, memory_dir, entries):
+        from mcp_server import handle_request
+        with patch("mcp_server._get_db", return_value=db):
+            resp = handle_request(
+                _req("kontext_prompts", {"limit": -1}),
+                memory_dir, entries,
+            )
+        text = resp["result"]["content"][0]["text"]
+        assert text.count("- `") == 1
+
 
 # ---------------------------------------------------------------------------
 # Access count bump in kontext_query
@@ -215,3 +224,15 @@ class TestAccessCountBump:
                 memory_dir, entries,
             )
         assert "result" in resp
+
+    def test_semantic_model_runtime_error_falls_back_to_keyword(self, db, memory_dir, entries):
+        from mcp_server import handle_request
+        with patch("mcp_server._get_db", return_value=db):
+            with patch("mcp_server.get_model", side_effect=RuntimeError("offline")):
+                resp = handle_request(
+                    _req("kontext_query", {"search": "Alice", "semantic": True}),
+                    memory_dir, entries,
+                )
+        text = resp["result"]["content"][0]["text"]
+        assert "Alice" in text
+        assert "semantic unavailable" in text

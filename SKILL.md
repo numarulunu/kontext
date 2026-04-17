@@ -43,6 +43,9 @@ Memory should be written via the Kontext MCP tools, NOT raw Edit/Write. The MCP 
 | `mcp__kontext__kontext_reindex` | Rebuild the in-memory index and DB embeddings |
 | `mcp__kontext__kontext_dream` | Run automated memory consolidation (dedup, normalize, resolve, compress, purge) |
 | `mcp__kontext__kontext_digest` | Process conversation digests into memory candidates |
+| `mcp__kontext__kontext_prompts` | Search/list recent user prompts captured by the UserPromptSubmit hook |
+
+Hook capture is active when installed: `hooks/capture_tool.py` records state-changing tool events, `hooks/log_prompt.py` records user prompts, and `hooks/session_summary.py` writes a session summary tied to the hook `session_id`.
 
 ## MEMORY.md — The Live Index
 

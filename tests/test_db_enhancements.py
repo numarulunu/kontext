@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 import time
+from pathlib import Path
 from db import KontextDB
 
 
@@ -66,6 +67,19 @@ class TestToolEvents:
         assert len(events[0]["summary"]) <= 500
 
 
+class TestDefaultDbPath:
+    def test_default_db_uses_user_data_dir(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("KONTEXT_DB_PATH", raising=False)
+        monkeypatch.setenv("KONTEXT_DATA_DIR", str(tmp_path / "data"))
+
+        d = KontextDB()
+        try:
+            assert Path(d.db_path).parent == tmp_path / "data"
+            assert Path(d.db_path).name == "kontext.db"
+        finally:
+            d.close()
+
+
 # ---------------------------------------------------------------------------
 # User prompts
 # ---------------------------------------------------------------------------
@@ -106,6 +120,26 @@ class TestUserPrompts:
         time.sleep(1.1)
         results = db.search_prompts(query="happened", hours=0)
         assert len(results) == 0
+
+    def test_like_fallback_escapes_wildcards(self, db):
+        db.add_user_prompt("s1", "literal 100% complete")
+        db.add_user_prompt("s1", "plain prompt")
+        db.conn.execute("DROP TABLE IF EXISTS user_prompts_fts")
+
+        results = db.search_prompts(query="%")
+
+        assert len(results) == 1
+        assert results[0]["content"] == "literal 100% complete"
+
+    def test_fts_operational_error_falls_back_to_like(self, db):
+        db.add_user_prompt("s1", "authentication prompt")
+        db.conn.execute("DROP TABLE IF EXISTS user_prompts_fts")
+        db.conn.execute("CREATE TABLE user_prompts_fts (content TEXT)")
+
+        results = db.search_prompts(query="authentication")
+
+        assert len(results) == 1
+        assert results[0]["content"] == "authentication prompt"
 
 
 # ---------------------------------------------------------------------------
@@ -182,3 +216,28 @@ class TestGetLatestSessionId:
         db._execute("INSERT INTO sessions (project) VALUES (?)", ("proj-b",))
         sid = db.get_latest_session_id()
         assert sid == 2
+
+    def test_upsert_session_summary_updates_existing_hook_session(self, db):
+        first_id = db.upsert_session_summary(
+            hook_session_id="hook-1",
+            investigated="a.py",
+            learned="first",
+            files_touched="a.py",
+            summary="first summary",
+        )
+        second_id = db.upsert_session_summary(
+            hook_session_id="hook-1",
+            investigated="b.py",
+            learned="second",
+            files_touched="b.py",
+            summary="second summary",
+        )
+
+        rows = db.conn.execute(
+            "SELECT * FROM sessions WHERE hook_session_id = ?", ("hook-1",)
+        ).fetchall()
+
+        assert first_id == second_id
+        assert len(rows) == 1
+        assert rows[0]["investigated"] == "b.py"
+        assert rows[0]["summary"] == "first summary"

@@ -57,7 +57,7 @@ class TestInitialize:
         req = _make_request("initialize")
         resp = handle_request(req, memory_dir, entries)
         assert resp["result"]["serverInfo"]["name"] == "kontext-memory"
-        assert resp["result"]["serverInfo"]["version"] == "6.0.0"
+        assert resp["result"]["serverInfo"]["version"] == "6.1.0"
 
     def test_notifications_initialized_returns_none(self, memory_dir, entries):
         from mcp_server import handle_request
@@ -77,7 +77,9 @@ class TestToolsList:
             "kontext_search", "kontext_reindex", "kontext_write",
             "kontext_query", "kontext_relate", "kontext_recent",
             "kontext_dream", "kontext_digest", "kontext_decay",
-            "kontext_session", "kontext_conflicts", "kontext_prompts",
+            "kontext_session", "kontext_cloud_status", "kontext_cloud_link",
+            "kontext_cloud_sync", "kontext_cloud_recover", "kontext_conflicts",
+            "kontext_prompts",
         }
         assert expected == tool_names
 
@@ -195,16 +197,26 @@ class TestKontextSession:
                 "status": "in progress", "next_step": "write tests",
                 "key_decisions": "use pytest", "summary": "testing session",
                 "files_touched": "db.py, mcp_server.py",
+                "workspace": "C:/repos/kontext",
             })
             resp = handle_request(req, memory_dir, entries)
             assert "result" in resp
 
             # Get
-            req = _make_request("tools/call", "kontext_session", {"action": "get"})
+            req = _make_request("tools/call", "kontext_session", {"action": "get", "workspace": "C:/repos/kontext"})
             resp = handle_request(req, memory_dir, entries)
             text = resp["result"]["content"][0]["text"]
             assert "Test Project" in text
             assert "testing session" in text
+            assert "c:/repos/kontext" in text.lower()
+
+    def test_session_get_requires_workspace(self, memory_dir, entries, db):
+        from mcp_server import handle_request
+        with patch("mcp_server._get_db", return_value=db):
+            req = _make_request("tools/call", "kontext_session", {"action": "get"})
+            resp = handle_request(req, memory_dir, entries)
+            text = resp["result"]["content"][0]["text"]
+            assert "workspace is required" in text.lower()
 
     def test_session_invalid_action(self, memory_dir, entries, db):
         from mcp_server import handle_request
@@ -368,3 +380,5 @@ class TestEmbeddingValidation:
         result = db.get_embedding(eid)
         assert result is None
         db.close()
+
+
