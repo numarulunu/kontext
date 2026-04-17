@@ -634,13 +634,21 @@ class KontextDB:
     # --- Entries ---
 
     def add_entry(self, file: str, fact: str, source: str = "", grade: float = 5,
-                  tier: str = "active", emit_cloud: bool = True) -> int:
+                  tier: str = "active", emit_cloud: bool = True,
+                  created_at: str | None = None) -> int:
         """Add an entry. Race-safe via UNIQUE(file, fact) index + INSERT OR IGNORE."""
         with self.transaction():
-            cursor = self._execute(
-                "INSERT OR IGNORE INTO entries (file, fact, source, grade, tier) VALUES (?, ?, ?, ?, ?)",
-                (file, fact, source, grade, tier)
-            )
+            if created_at:
+                cursor = self._execute(
+                    "INSERT OR IGNORE INTO entries (file, fact, source, grade, tier, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (file, fact, source, grade, tier, created_at, created_at)
+                )
+            else:
+                cursor = self._execute(
+                    "INSERT OR IGNORE INTO entries (file, fact, source, grade, tier) VALUES (?, ?, ?, ?, ?)",
+                    (file, fact, source, grade, tier)
+                )
             row = self.conn.execute(
                 "SELECT id FROM entries WHERE file = ? AND fact = ?", (file, fact)
             ).fetchone()
@@ -793,13 +801,21 @@ class KontextDB:
 
     def save_session(self, project: str = "", status: str = "", next_step: str = "",
                      key_decisions: str = "", summary: str = "", files_touched: str = "",
-                     workspace: str = "", emit_cloud: bool = True):
+                     workspace: str = "", emit_cloud: bool = True,
+                     created_at: str | None = None):
         workspace_value = _normalize_workspace(workspace)
         with self.transaction():
-            cursor = self._execute(
-                "INSERT INTO sessions (workspace, project, status, next_step, key_decisions, summary, files_touched) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (workspace_value, project, status, next_step, key_decisions, summary, files_touched)
-            )
+            if created_at:
+                cursor = self._execute(
+                    "INSERT INTO sessions (workspace, project, status, next_step, key_decisions, summary, files_touched, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (workspace_value, project, status, next_step, key_decisions, summary, files_touched, created_at)
+                )
+            else:
+                cursor = self._execute(
+                    "INSERT INTO sessions (workspace, project, status, next_step, key_decisions, summary, files_touched) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (workspace_value, project, status, next_step, key_decisions, summary, files_touched)
+                )
             session_id = cursor.lastrowid or 0
             self._export_last_session(
                 project,
@@ -881,15 +897,28 @@ class KontextDB:
 
     # --- File Metadata ---
 
-    def set_file_meta(self, filename: str, file_type: str = "user", description: str = ""):
+    def set_file_meta(self, filename: str, file_type: str = "user", description: str = "",
+                      emit_cloud: bool = True, updated_at: str | None = None):
+        stamp = updated_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
         self._execute("""
             INSERT INTO file_meta (filename, file_type, description, updated_at)
-            VALUES (?, ?, ?, datetime('now'))
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(filename) DO UPDATE SET
                 file_type = excluded.file_type,
                 description = excluded.description,
-                updated_at = datetime('now')
-        """, (filename, file_type, description))
+                updated_at = excluded.updated_at
+        """, (filename, file_type, description, stamp))
+        if emit_cloud:
+            self._maybe_append_local_history_op(
+                op_kind="file_meta.upserted",
+                entity_type="file_meta",
+                entity_id=filename,
+                payload={
+                    "filename": filename,
+                    "file_type": file_type,
+                    "description": description,
+                },
+            )
 
     def get_file_meta(self, filename: str) -> dict:
         row = self.conn.execute(
@@ -911,17 +940,40 @@ class KontextDB:
 
     # --- Relations (knowledge graph) ---
 
-    def add_relation(self, entity_a: str, relation: str, entity_b: str, confidence: float = 1.0, source: str = ""):
+    def add_relation(self, entity_a: str, relation: str, entity_b: str,
+                     confidence: float = 1.0, source: str = "",
+                     emit_cloud: bool = True,
+                     created_at: str | None = None):
         """Add a relation. Race-safe via UNIQUE(entity_a, relation, entity_b) + INSERT OR IGNORE."""
-        self._execute(
-            "INSERT OR IGNORE INTO relations (entity_a, relation, entity_b, confidence, source) VALUES (?, ?, ?, ?, ?)",
-            (entity_a, relation, entity_b, confidence, source)
-        )
+        if created_at:
+            cursor = self._execute(
+                "INSERT OR IGNORE INTO relations (entity_a, relation, entity_b, confidence, source, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (entity_a, relation, entity_b, confidence, source, created_at)
+            )
+        else:
+            cursor = self._execute(
+                "INSERT OR IGNORE INTO relations (entity_a, relation, entity_b, confidence, source) VALUES (?, ?, ?, ?, ?)",
+                (entity_a, relation, entity_b, confidence, source)
+            )
         row = self.conn.execute(
             "SELECT id FROM relations WHERE entity_a = ? AND relation = ? AND entity_b = ?",
             (entity_a, relation, entity_b)
         ).fetchone()
-        return row[0] if row else 0
+        relation_id = row[0] if row else 0
+        if cursor.rowcount > 0 and emit_cloud and relation_id:
+            self._maybe_append_local_history_op(
+                op_kind="relation.written",
+                entity_type="relation",
+                entity_id=str(relation_id),
+                payload={
+                    "entity_a": entity_a,
+                    "relation": relation,
+                    "entity_b": entity_b,
+                    "confidence": confidence,
+                    "source": source,
+                },
+            )
+        return relation_id
 
     def get_relations(self, entity: str) -> list[dict]:
         """Get all relations where entity is either subject or object."""
@@ -972,17 +1024,37 @@ class KontextDB:
 
     # --- Conflicts ---
 
-    def add_conflict(self, file: str, entry_a: str, entry_b: str) -> int:
+    def add_conflict(self, file: str, entry_a: str, entry_b: str,
+                     emit_cloud: bool = True,
+                     created_at: str | None = None) -> int:
         """Race-safe via UNIQUE(file, entry_a, entry_b) + INSERT OR IGNORE."""
-        self._execute(
-            "INSERT OR IGNORE INTO conflicts (file, entry_a, entry_b) VALUES (?, ?, ?)",
-            (file, entry_a, entry_b)
-        )
+        if created_at:
+            cursor = self._execute(
+                "INSERT OR IGNORE INTO conflicts (file, entry_a, entry_b, created_at) VALUES (?, ?, ?, ?)",
+                (file, entry_a, entry_b, created_at)
+            )
+        else:
+            cursor = self._execute(
+                "INSERT OR IGNORE INTO conflicts (file, entry_a, entry_b) VALUES (?, ?, ?)",
+                (file, entry_a, entry_b)
+            )
         row = self.conn.execute(
             "SELECT id FROM conflicts WHERE file = ? AND entry_a = ? AND entry_b = ?",
             (file, entry_a, entry_b)
         ).fetchone()
-        return row[0] if row else 0
+        conflict_id = row[0] if row else 0
+        if cursor.rowcount > 0 and emit_cloud and conflict_id:
+            self._maybe_append_local_history_op(
+                op_kind="conflict.detected",
+                entity_type="conflict",
+                entity_id=str(conflict_id),
+                payload={
+                    "file": file,
+                    "entry_a": entry_a,
+                    "entry_b": entry_b,
+                },
+            )
+        return conflict_id
 
     def get_pending_conflicts(self) -> list[dict]:
         return [dict(r) for r in self.conn.execute(
@@ -1179,16 +1251,24 @@ class KontextDB:
 
     def add_tool_event(self, session_id: str, tool_name: str, summary: str,
                        file_path: str = None, grade: float = 5.0,
-                       emit_cloud: bool = True) -> int:
+                       emit_cloud: bool = True,
+                       created_at: str | None = None) -> int:
         """Record a PostToolUse event. Returns the new row id."""
         session_value = session_id or ""
         summary_value = (summary or "")[:500]
         with self.transaction():
-            cursor = self._execute(
-                "INSERT INTO tool_events (session_id, tool_name, summary, file_path, grade)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (session_value, tool_name, summary_value, file_path, grade),
-            )
+            if created_at:
+                cursor = self._execute(
+                    "INSERT INTO tool_events (session_id, tool_name, summary, file_path, grade, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (session_value, tool_name, summary_value, file_path, grade, created_at),
+                )
+            else:
+                cursor = self._execute(
+                    "INSERT INTO tool_events (session_id, tool_name, summary, file_path, grade)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (session_value, tool_name, summary_value, file_path, grade),
+                )
             event_id = cursor.lastrowid or 0
             if emit_cloud and event_id:
                 self._maybe_append_local_history_op(
@@ -1242,17 +1322,24 @@ class KontextDB:
     # -------------------------------------------------------------------------
 
     def add_user_prompt(self, session_id: str, content: str,
-                        emit_cloud: bool = True) -> int:
+                        emit_cloud: bool = True,
+                        created_at: str | None = None) -> int:
         """Log a user prompt. Content is hard-capped at 2000 chars. Returns row id."""
         content_value = content or ""
         if len(content_value) > 2000:
             content_value = content_value[:2000]
         session_value = session_id or ""
         with self.transaction():
-            cursor = self._execute(
-                "INSERT INTO user_prompts (session_id, content) VALUES (?, ?)",
-                (session_value, content_value),
-            )
+            if created_at:
+                cursor = self._execute(
+                    "INSERT INTO user_prompts (session_id, content, created_at) VALUES (?, ?, ?)",
+                    (session_value, content_value, created_at),
+                )
+            else:
+                cursor = self._execute(
+                    "INSERT INTO user_prompts (session_id, content) VALUES (?, ?)",
+                    (session_value, content_value),
+                )
             prompt_id = cursor.lastrowid or 0
             if emit_cloud and prompt_id:
                 self._maybe_append_local_history_op(

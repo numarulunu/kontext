@@ -3,8 +3,13 @@ from cloud.codec import pack_payload
 
 
 def _project_history_op(db, envelope) -> None:
-    """Project replayed history ops into queryable local tables."""
+    """Project replayed history ops into queryable local tables.
+
+    Preserves the origin `created_at` so the cloud reflects true longevity
+    and ordering, not backfill time.
+    """
     payload = envelope.payload or {}
+    created_at = envelope.created_at
     if envelope.op_kind == "entry.written":
         db.add_entry(
             file=payload.get("file", ""),
@@ -13,6 +18,7 @@ def _project_history_op(db, envelope) -> None:
             grade=payload.get("grade", 5),
             tier=payload.get("tier", "active"),
             emit_cloud=False,
+            created_at=created_at,
         )
     elif envelope.op_kind == "session.saved":
         db.save_session(
@@ -24,12 +30,14 @@ def _project_history_op(db, envelope) -> None:
             files_touched=payload.get("files_touched", ""),
             workspace=payload.get("workspace", ""),
             emit_cloud=False,
+            created_at=created_at,
         )
     elif envelope.op_kind == "prompt.logged":
         db.add_user_prompt(
             session_id=payload.get("session_id", ""),
             content=payload.get("content", ""),
             emit_cloud=False,
+            created_at=created_at,
         )
     elif envelope.op_kind == "tool.logged":
         db.add_tool_event(
@@ -39,6 +47,33 @@ def _project_history_op(db, envelope) -> None:
             file_path=payload.get("file_path"),
             grade=payload.get("grade", 5.0),
             emit_cloud=False,
+            created_at=created_at,
+        )
+    elif envelope.op_kind == "relation.written":
+        db.add_relation(
+            entity_a=payload.get("entity_a", ""),
+            relation=payload.get("relation", ""),
+            entity_b=payload.get("entity_b", ""),
+            confidence=payload.get("confidence", 1.0),
+            source=payload.get("source", ""),
+            emit_cloud=False,
+            created_at=created_at,
+        )
+    elif envelope.op_kind == "conflict.detected":
+        db.add_conflict(
+            file=payload.get("file", ""),
+            entry_a=payload.get("entry_a", ""),
+            entry_b=payload.get("entry_b", ""),
+            emit_cloud=False,
+            created_at=created_at,
+        )
+    elif envelope.op_kind == "file_meta.upserted":
+        db.set_file_meta(
+            filename=payload.get("filename", ""),
+            file_type=payload.get("file_type", "user"),
+            description=payload.get("description", ""),
+            emit_cloud=False,
+            updated_at=created_at,
         )
 
 
