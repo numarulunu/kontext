@@ -373,16 +373,22 @@ def cloud_pull_once(db, limit: int = 500) -> int:
 def sync_once(db, limit: int = 500) -> dict:
     state = _require_state(db)
     client = _authed_client(state)
+    ws = state['workspace_id']
+    dev = state['device_id']
 
-    history_rows = db.list_history_ops_since(state['workspace_id'], '')
+    history_push_after = _current_cursor(db, ws, dev, 'history_push')
+    history_rows = db.list_history_ops_since(ws, history_push_after, limit=limit)
     history_items = [_history_payload_item(row) for row in history_rows]
     if history_items:
-        client.push_history(state['workspace_id'], history_items)
+        client.push_history(ws, history_items)
+        db.advance_sync_cursor(ws, dev, 'history_push', history_rows[-1]['id'])
 
-    canonical_rows = db.list_canonical_revisions_since(state['workspace_id'], '')
+    canonical_push_after = _current_cursor(db, ws, dev, 'canonical_push')
+    canonical_rows = db.list_canonical_revisions_since(ws, canonical_push_after, limit=limit)
     canonical_items = [_canonical_payload_item(row) for row in canonical_rows]
     if canonical_items:
-        client.push_canonical(state['workspace_id'], canonical_items)
+        client.push_canonical(ws, canonical_items)
+        db.advance_sync_cursor(ws, dev, 'canonical_push', canonical_rows[-1]['id'])
 
     history_pulled, history_cursor = _pull_history(
         db,

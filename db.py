@@ -314,7 +314,7 @@ def _migration_11_cloud_ops(conn):
         CREATE TABLE IF NOT EXISTS sync_cursors (
             workspace_id TEXT NOT NULL,
             device_id TEXT NOT NULL,
-            lane TEXT NOT NULL CHECK(lane IN ('history', 'canonical')),
+            lane TEXT NOT NULL CHECK(lane IN ('history', 'canonical', 'history_push', 'canonical_push')),
             cursor TEXT NOT NULL,
             PRIMARY KEY (workspace_id, device_id, lane),
             FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
@@ -330,6 +330,25 @@ def _migration_13_workspace_auth(conn):
         conn.execute("ALTER TABLE workspaces ADD COLUMN api_token_hash TEXT DEFAULT NULL")
     if "api_token_salt" not in cols:
         conn.execute("ALTER TABLE workspaces ADD COLUMN api_token_salt TEXT DEFAULT NULL")
+
+
+def _migration_14_push_cursors(conn):
+    """Widen sync_cursors.lane CHECK to allow history_push / canonical_push."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS sync_cursors__new (
+            workspace_id TEXT NOT NULL,
+            device_id TEXT NOT NULL,
+            lane TEXT NOT NULL CHECK(lane IN ('history', 'canonical', 'history_push', 'canonical_push')),
+            cursor TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, device_id, lane),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(device_id) REFERENCES devices(id)
+        );
+        INSERT INTO sync_cursors__new (workspace_id, device_id, lane, cursor)
+            SELECT workspace_id, device_id, lane, cursor FROM sync_cursors;
+        DROP TABLE sync_cursors;
+        ALTER TABLE sync_cursors__new RENAME TO sync_cursors;
+    """)
 
 
 def _migration_12_canonical_objects(conn):
@@ -381,6 +400,7 @@ MIGRATIONS = [
     (11, _migration_11_cloud_ops),
     (12, _migration_12_canonical_objects),
     (13, _migration_13_workspace_auth),
+    (14, _migration_14_push_cursors),
 ]
 LATEST_SCHEMA_VERSION = max(v for v, _ in MIGRATIONS)
 
