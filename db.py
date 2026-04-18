@@ -384,6 +384,31 @@ def _migration_17_sessions_files_loaded(conn):
         conn.execute("ALTER TABLE sessions ADD COLUMN files_loaded TEXT DEFAULT ''")
 
 
+def _migration_18_retrieval_evals(conn):
+    """Store per-query retrieval eval results for regression tracking."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS retrieval_evals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            query_text TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT '',
+            held_out INTEGER NOT NULL DEFAULT 0,
+            recall_at_3 REAL NOT NULL DEFAULT 0.0,
+            recall_at_5 REAL NOT NULL DEFAULT 0.0,
+            mrr REAL NOT NULL DEFAULT 0.0,
+            latency_ms INTEGER NOT NULL DEFAULT 0,
+            mode TEXT NOT NULL DEFAULT 'rrf',
+            rank TEXT NOT NULL DEFAULT 'first_seen',
+            top_files TEXT DEFAULT '',
+            git_sha TEXT DEFAULT '',
+            schema_version INTEGER DEFAULT 0,
+            ts TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_re_run_id ON retrieval_evals(run_id);
+        CREATE INDEX IF NOT EXISTS idx_re_ts ON retrieval_evals(ts);
+    """)
+
+
 def _migration_15_retrieval_queries(conn):
     """Log every kontext_query / kontext_search call for regression tracking."""
     conn.executescript("""
@@ -457,6 +482,7 @@ MIGRATIONS = [
     (14, _migration_14_push_cursors),
     (15, _migration_15_retrieval_queries),
     (17, _migration_17_sessions_files_loaded),
+    (18, _migration_18_retrieval_evals),
 ]
 LATEST_SCHEMA_VERSION = max(v for v, _ in MIGRATIONS)
 
