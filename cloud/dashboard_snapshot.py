@@ -9,8 +9,13 @@ from __future__ import annotations
 import math
 import sqlite3
 import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
+
+
+_SNAPSHOT_CACHE: dict[str, Any] = {"built_at": 0.0, "payload": None}
+_CACHE_TTL_SEC = 30.0
 
 
 def _parse_ts_ms(ts: str | None, fallback_ms: int) -> int:
@@ -51,6 +56,20 @@ def _role_from_class(device_class: str | None) -> str:
 
 
 def build_snapshot(db_path: str) -> dict[str, Any]:
+    """Return the dashboard payload. Cached in-process for _CACHE_TTL_SEC
+    because the relations derivation is O(entities × facts).
+    """
+    now = time.time()
+    cached = _SNAPSHOT_CACHE.get("payload")
+    if cached is not None and (now - _SNAPSHOT_CACHE["built_at"]) < _CACHE_TTL_SEC:
+        return cached
+    payload = _build_snapshot_uncached(db_path)
+    _SNAPSHOT_CACHE["payload"] = payload
+    _SNAPSHOT_CACHE["built_at"] = now
+    return payload
+
+
+def _build_snapshot_uncached(db_path: str) -> dict[str, Any]:
     now_ms = int(time.time() * 1000)
     day_ms = 86_400_000
     conn = sqlite3.connect(db_path)
@@ -95,14 +114,60 @@ def build_snapshot(db_path: str) -> dict[str, Any]:
         ).fetchall()
         all_rows = list(file_rows) + list(orphan_rows)
 
-        relations_by_file: dict[str, list[str]] = {}
+        # Derive file-to-file relations from the entities table. `relations`
+        # stores (entity_a, entity_b) by concept name ("Melocchi", "Bass"),
+        # not by filename. To turn that into file-level edges: find which
+        # files contain each entity (by scanning fact text), then for each
+        # relation (A,B) add an edge between every file in files(A) × files(B).
         rel_rows = conn.execute(
-            "SELECT entity_a, entity_b FROM relations"
+            "SELECT entity_a, entity_b, confidence FROM relations"
         ).fetchall()
+        fact_rows = conn.execute(
+            "SELECT file, fact FROM entries WHERE fact IS NOT NULL"
+        ).fetchall()
+        file_text: dict[str, str] = defaultdict(str)
+        for fr in fact_rows:
+            file_text[fr["file"]] += (fr["fact"] or "").lower() + " · "
+
+        entity_names: set[str] = set()
         for r in rel_rows:
-            a, b = r["entity_a"], r["entity_b"]
-            relations_by_file.setdefault(a, []).append(b)
-            relations_by_file.setdefault(b, []).append(a)
+            if r["entity_a"]:
+                entity_names.add(r["entity_a"])
+            if r["entity_b"]:
+                entity_names.add(r["entity_b"])
+
+        # entity → set of files whose concatenated fact text contains it
+        entity_to_files: dict[str, list[str]] = {}
+        for name in entity_names:
+            needle = name.lower()
+            if len(needle) < 3:
+                continue  # skip tiny tokens that match everything
+            hit = [f for f, txt in file_text.items() if needle in txt]
+            if hit:
+                entity_to_files[name] = hit
+
+        edge_weight: dict[tuple[str, str], float] = defaultdict(float)
+        for r in rel_rows:
+            fs_a = entity_to_files.get(r["entity_a"], [])
+            fs_b = entity_to_files.get(r["entity_b"], [])
+            if not fs_a or not fs_b:
+                continue
+            w = float(r["confidence"] or 0.5)
+            for fa in fs_a:
+                for fb in fs_b:
+                    if fa == fb:
+                        continue
+                    key = (fa, fb) if fa < fb else (fb, fa)
+                    edge_weight[key] += w
+
+        relations_by_file: dict[str, list[str]] = defaultdict(list)
+        # Sort edges by descending weight so top-N truncation keeps the strongest.
+        sorted_edges = sorted(edge_weight.items(), key=lambda kv: -kv[1])
+        for (fa, fb), _w in sorted_edges:
+            if len(relations_by_file[fa]) < 6:
+                relations_by_file[fa].append(fb)
+            if len(relations_by_file[fb]) < 6:
+                relations_by_file[fb].append(fa)
 
         file_to_id: dict[str, str] = {r["file"]: f"e{i+1:03d}" for i, r in enumerate(all_rows)}
         entries: list[dict[str, Any]] = []
