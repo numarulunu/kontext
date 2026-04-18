@@ -13,6 +13,8 @@ Phases:
   5. Purge       — delete entries with grade <= 1 that haven't been accessed in 120+ days
   6. ScarPromote — scan project_*_log.md, cluster SCARs appearing in ≥2 independent
                    entries, emit _scar_promotions.md for manual review
+  7. KillConditions — evaluate v0.1 self-improving-agents kill switches
+                      (signal drift, curation cost, SCAR review rate)
 
 Usage:
     python dream.py              # Full consolidation
@@ -23,6 +25,7 @@ Usage:
 import sys
 import os
 import re
+import subprocess
 import logging
 import argparse
 from datetime import datetime, timezone
@@ -577,6 +580,236 @@ def phase_scar_promote(db: KontextDB, dry_run: bool = False) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Phase 7: Kill conditions (self-improving agents v0.1 self-check)
+# ---------------------------------------------------------------------------
+#
+# Evaluates 3 kill conditions from the v0.1 mastermind decision:
+#  1. Signal feasibility — recall@3 drift >5% between two runs ≥6 days apart
+#     on identical query sets over unchanged corpus.
+#  2. Curation cost — >4 human commits touching eval_retrieval.yaml or
+#     _scar_promotions.md in the last 7 days (proxy for >1hr/week).
+#  3. SCAR review rate — <50% of auto-promoted SCARs in the last 30 days
+#     have been reviewed (proxy: human commit within 7 days of the auto-commit).
+#
+# No DB mutation. Read-only signal surfaced in the dream report.
+
+_DRIFT_THRESHOLD = 0.05   # >5% delta on recall@3 trips "fail"
+_CURATION_COMMITS_LIMIT = 4  # >4 commits / 7d = warn (≈1hr/week proxy)
+_SCAR_REVIEW_RATE_FLOOR = 0.50  # <50% reviewed = warn
+
+_REPO_DIR = Path(__file__).parent
+
+
+def _git(args: list[str]) -> str:
+    """Run git in the repo dir. Return stdout (or '' on failure)."""
+    try:
+        out = subprocess.run(
+            ["git"] + args,
+            cwd=str(_REPO_DIR),
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        return out.stdout or ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _count_git_commits_since(paths: tuple[str, ...], *, since: str = "7 days ago") -> int:
+    """Count commits in the last N days touching any of the given paths.
+
+    Returns 0 on git failure (test-friendly default).
+    """
+    out = _git(["log", f"--since={since}", "--oneline", "--"] + list(paths))
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    return len(lines)
+
+
+_AUTO_COMMIT_RE = re.compile(r"^(?:dream:|feat\(dream\):|chore\(dream\):)", re.IGNORECASE)
+
+
+def _scar_promotion_commits() -> list[dict]:
+    """Return list of commits touching _scar_promotions.md in the last 30 days.
+
+    Each dict: {sha, subject, ts (iso), is_auto (bool)}.
+    """
+    out = _git([
+        "log", "--since=30 days ago",
+        "--format=%H\x1f%cI\x1f%s",
+        "--", "_scar_promotions.md",
+    ])
+    commits: list[dict] = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\x1f")
+        if len(parts) < 3:
+            continue
+        sha, iso_ts, subject = parts[0], parts[1], parts[2]
+        commits.append({
+            "sha": sha,
+            "ts": iso_ts,
+            "subject": subject,
+            "is_auto": bool(_AUTO_COMMIT_RE.match(subject.strip())),
+        })
+    return commits
+
+
+def _drift_check(db: KontextDB) -> dict:
+    """Compare two runs on identical query sets ≥6 days apart.
+
+    Finds the most recent run and the most recent prior run ≥6 days earlier
+    that shares the same set of query_texts. Computes mean recall@3 delta.
+    """
+    # Pull all runs ordered by timestamp (one row per run summarized later)
+    try:
+        rows = db.conn.execute(
+            """SELECT run_id, query_text, recall_at_3, ts
+                 FROM retrieval_evals
+                ORDER BY ts DESC"""
+        ).fetchall()
+    except Exception:
+        return {"status": "insufficient_data", "delta_recall_at_3": 0.0, "days_between_runs": 0}
+
+    if not rows:
+        return {"status": "insufficient_data", "delta_recall_at_3": 0.0, "days_between_runs": 0}
+
+    # Group by run_id preserving ts
+    runs: dict[str, dict] = {}
+    for r in rows:
+        rid = r["run_id"]
+        if rid not in runs:
+            runs[rid] = {"ts": r["ts"], "queries": {}}
+        runs[rid]["queries"][r["query_text"]] = float(r["recall_at_3"])
+        # Keep the max ts seen for this run (rows may share same ts)
+        if r["ts"] and r["ts"] > runs[rid]["ts"]:
+            runs[rid]["ts"] = r["ts"]
+
+    if len(runs) < 2:
+        return {"status": "insufficient_data", "delta_recall_at_3": 0.0, "days_between_runs": 0}
+
+    # Sort runs newest → oldest
+    sorted_runs = sorted(runs.items(), key=lambda kv: kv[1]["ts"], reverse=True)
+    newest_id, newest = sorted_runs[0]
+    newest_queries = set(newest["queries"].keys())
+
+    for older_id, older in sorted_runs[1:]:
+        older_queries = set(older["queries"].keys())
+        if older_queries != newest_queries:
+            continue
+        try:
+            dt_new = datetime.fromisoformat(newest["ts"].replace("Z", "+00:00"))
+            dt_old = datetime.fromisoformat(older["ts"].replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            continue
+        days_between = (dt_new - dt_old).days
+        if days_between < 6:
+            continue
+        # Same query set + ≥6 days gap → compute delta
+        mean_new = sum(newest["queries"].values()) / len(newest_queries)
+        mean_old = sum(older["queries"].values()) / len(older_queries)
+        delta = mean_new - mean_old
+        status = "fail" if abs(delta) > _DRIFT_THRESHOLD else "ok"
+        return {
+            "status": status,
+            "delta_recall_at_3": round(delta, 4),
+            "days_between_runs": days_between,
+        }
+
+    return {"status": "insufficient_data", "delta_recall_at_3": 0.0, "days_between_runs": 0}
+
+
+def _curation_load() -> dict:
+    commits = _count_git_commits_since(("eval_retrieval.yaml", "_scar_promotions.md"))
+    status = "warn" if commits > _CURATION_COMMITS_LIMIT else "ok"
+    return {"status": status, "commits_7d": commits}
+
+
+def _scar_review_rate() -> dict:
+    """Of auto-commits on _scar_promotions.md in last 30d, how many had a
+    human follow-up commit within 7 days? Proxy for review rate."""
+    commits = _scar_promotion_commits()
+    if not commits:
+        return {
+            "status": "insufficient_data",
+            "promoted_30d": 0,
+            "reviewed_30d": 0,
+            "rate": 0.0,
+        }
+
+    auto_commits = [c for c in commits if c["is_auto"]]
+    human_commits = [c for c in commits if not c["is_auto"]]
+
+    if not auto_commits:
+        return {
+            "status": "insufficient_data",
+            "promoted_30d": 0,
+            "reviewed_30d": 0,
+            "rate": 0.0,
+        }
+
+    # Parse human commit timestamps once
+    human_ts: list[datetime] = []
+    for c in human_commits:
+        try:
+            human_ts.append(datetime.fromisoformat(c["ts"].replace("Z", "+00:00")))
+        except (ValueError, AttributeError):
+            continue
+
+    reviewed = 0
+    for ac in auto_commits:
+        try:
+            ac_dt = datetime.fromisoformat(ac["ts"].replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            continue
+        # Any human commit within 7 days AFTER the auto-commit counts as reviewed
+        for h_dt in human_ts:
+            delta_days = (h_dt - ac_dt).days
+            if 0 <= delta_days <= 7:
+                reviewed += 1
+                break
+
+    rate = reviewed / len(auto_commits)
+    status = "warn" if rate < _SCAR_REVIEW_RATE_FLOOR else "ok"
+    return {
+        "status": status,
+        "promoted_30d": len(auto_commits),
+        "reviewed_30d": reviewed,
+        "rate": round(rate, 3),
+    }
+
+
+def phase_kill_conditions(db: KontextDB, dry_run: bool = False) -> dict:
+    """Evaluate v0.1 kill conditions. Read-only: never mutates DB or files.
+
+    Returns dict with keys: drift_check, curation_load, scar_review_rate,
+    any_kill_fired (bool). Any status in {"fail", "warn"} sets any_kill_fired.
+    """
+    drift = _drift_check(db)
+    curation = _curation_load()
+    review = _scar_review_rate()
+
+    any_fired = (
+        drift["status"] == "fail"
+        or curation["status"] == "warn"
+        or review["status"] == "warn"
+    )
+
+    _log.info(
+        f"KILL_CONDITIONS drift={drift['status']} "
+        f"curation={curation['status']} review={review['status']} fired={any_fired}"
+    )
+
+    return {
+        "drift_check": drift,
+        "curation_load": curation,
+        "scar_review_rate": review,
+        "any_kill_fired": any_fired,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -587,6 +820,7 @@ PHASES = {
     "compress": phase_compress,
     "purge": phase_purge,
     "scar_promote": phase_scar_promote,
+    "kill_conditions": phase_kill_conditions,
 }
 
 
@@ -636,9 +870,35 @@ def print_report(results: dict, dry_run: bool):
 
     total_actions = sum(
         v for stats in results.values() for k, v in stats.items()
-        if k in ("merged", "anchored", "auto_resolved", "compressed", "purged")
+        if isinstance(v, int) and k in ("merged", "anchored", "auto_resolved", "compressed", "purged")
     )
     print(f"\n Total actions: {total_actions}")
+
+    # Kill-condition warning banner
+    kc = results.get("kill_conditions")
+    if kc and kc.get("any_kill_fired"):
+        print(f"\n{'!' * 50}")
+        print(" KILL CONDITION FIRED — v0.1 self-check failed")
+        print(f"{'!' * 50}")
+        drift = kc.get("drift_check", {})
+        cur = kc.get("curation_load", {})
+        rev = kc.get("scar_review_rate", {})
+        if drift.get("status") == "fail":
+            print(
+                f"   DRIFT: recall@3 delta={drift.get('delta_recall_at_3')} over "
+                f"{drift.get('days_between_runs')} days (>5% threshold)"
+            )
+        if cur.get("status") == "warn":
+            print(
+                f"   CURATION: {cur.get('commits_7d')} commits in 7d on "
+                f"eval_retrieval.yaml / _scar_promotions.md (>{_CURATION_COMMITS_LIMIT} limit)"
+            )
+        if rev.get("status") == "warn":
+            print(
+                f"   REVIEW: {rev.get('reviewed_30d')}/{rev.get('promoted_30d')} SCARs "
+                f"reviewed in 30d (rate={rev.get('rate')}, floor={_SCAR_REVIEW_RATE_FLOOR})"
+            )
+        print(f"{'!' * 50}")
     print(f"{'=' * 50}")
 
 
@@ -660,7 +920,8 @@ def main() -> int:
         # Re-export affected files after modifications
         if not args.dry_run and any(
             v for stats in results.values() for k, v in stats.items()
-            if k in ("merged", "anchored", "auto_resolved", "compressed", "purged") and v > 0
+            if k in ("merged", "anchored", "auto_resolved", "compressed", "purged")
+            and isinstance(v, int) and v > 0
         ):
             from export import export_all, export_memory_index
             from mcp_server import find_memory_dir
