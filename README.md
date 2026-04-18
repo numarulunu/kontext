@@ -49,6 +49,13 @@ SQLite database as the source of truth. Knowledge graph for entity relations. Se
 
 <br>
 
+## Prerequisites
+
+- **Python 3.10+** installed and on `PATH`
+- **Claude Code CLI** installed — [get it here](https://claude.ai/code). Open it at least once so `~/.claude/` exists before you run setup.
+
+<br>
+
 ## Quick Start
 
 ```bash
@@ -457,9 +464,14 @@ Kontext ships with a small web dashboard — overview score, entries browser,
 devices, sync ops. Works **locally out of the box**:
 
 ```bash
-python -m cloud.server
-# then open http://localhost:8080/dashboard in your browser
+kontext
 ```
+
+That's it. `setup.sh` installs a `kontext` command that starts the local
+server and opens the dashboard in your browser. Ctrl+C stops it.
+
+Prefer a module invocation (no install)? `python -m cloud.server` does the
+same thing — then open `http://localhost:8080/dashboard`.
 
 It binds to `127.0.0.1` only, reads your local `kontext.db`, and auto-creates
 a "local" workspace on first hit so every view renders. No cloud setup

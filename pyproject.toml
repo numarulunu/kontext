@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kontext"
+version = "0.1.0"
+description = "Persistent, file-based memory system for Claude Code with a local dashboard."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.0.0",
+    "msgpack>=1.0.0",
+    "zstandard>=0.23.0",
+    "PyNaCl>=1.5.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "jinja2>=3.1.0",
+]
+
+[project.optional-dependencies]
+semantic = ["sentence-transformers>=3.0.0"]
+
+[project.scripts]
+kontext = "kontext_cli:main"
+
+[tool.setuptools]
+py-modules = [
+    "kontext_cli",
+    "db",
+    "sync",
+    "digest",
+    "dream",
+    "graph",
+    "export",
+    "migrate",
+    "mcp_server",
+    "brainstorm",
+    "codex_sync",
+    "backfill_cloud_ops",
+]
+
+[tool.setuptools.packages.find]
+include = ["cloud*", "intake*", "pipeline*", "hooks*"]
+exclude = ["tests*", "_chunks*", "_processing-ready*", "tmp*", "docs*", "deploy*"]

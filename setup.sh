@@ -145,23 +145,37 @@ else
     echo "  Run 'python install_hooks.py' manually when Python is available."
 fi
 
-# --- Install semantic search ---
+# --- Install semantic search (required — core to retrieval quality) ---
 echo ""
 if [ -z "$PYTHON" ]; then
-    echo "  Skipping semantic search install (Python not found)."
+    echo "  ERROR: Python not found. Semantic search is required and cannot be installed."
+    exit 1
 elif $PYTHON -c "import sentence_transformers" 2>/dev/null; then
     echo "  Semantic search already installed"
 else
-    echo "  Semantic search requires sentence-transformers (~500MB download)."
-    echo "  This enables meaning-based file matching instead of just keywords."
-    read -p "  Install now? [y/n]: " INSTALL_ST
-    if [ "$INSTALL_ST" = "y" ]; then
-        echo "  Installing (this may take a few minutes)..."
-        $PYTHON -m pip install sentence-transformers -q 2>&1 | tail -1
-        echo "  Semantic search installed"
+    echo "  Installing semantic search (sentence-transformers + torch, a few minutes)..."
+    $PYTHON -m pip install sentence-transformers -q 2>&1 | tail -1
+    echo "  Semantic search installed"
+fi
+
+# --- Pre-warm the embedding model so the first query is instant ---
+echo "  Pre-warming embedding model (one-time cache, ~1 min)..."
+$PYTHON -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2').encode('warmup')" 2>&1 | tail -1 || true
+echo "  Model cached. First semantic query will be instant."
+
+# --- Install `kontext` terminal command ---
+echo ""
+if [ -z "$PYTHON" ]; then
+    echo "  Skipping 'kontext' CLI install (Python not found)."
+else
+    echo "  Installing 'kontext' terminal command..."
+    (cd "$SCRIPT_DIR" && $PYTHON -m pip install -e . -q 2>&1 | tail -3) || true
+    if command -v kontext &>/dev/null; then
+        echo "  'kontext' installed. Type 'kontext' in a terminal to open the dashboard."
     else
-        echo "  Skipped. Kontext will use keyword matching (still works well)."
-        echo "  Run 'pip install sentence-transformers' later to enable it."
+        echo "  'kontext' command installed, but not on PATH."
+        echo "  You may need to add your user-scripts dir to PATH (pip will print its location)."
+        echo "  Fallback: run 'python -m cloud.server' from the project directory."
     fi
 fi
 

@@ -239,6 +239,10 @@ def _build_router(db_path: str) -> APIRouter:
     templates.env.filters["localtime"] = _localtime
     router = APIRouter()
 
+    @router.get("/", include_in_schema=False)
+    def root():
+        return RedirectResponse(url="/dashboard", status_code=307)
+
     @router.get("/dashboard", response_class=HTMLResponse)
     def overview(request: Request):
         with KontextDB(db_path) as req_db:
