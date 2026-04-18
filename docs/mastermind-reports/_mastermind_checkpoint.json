@@ -1,35 +1,9 @@
 {
-  "phase": "3",
-  "timestamp": "2026-04-17T19:28:00Z",
-  "idea_hash": "does pulling from memory work efficiently? is cl",
-  "approaches_ranked": [
-    {
-      "rank": 1,
-      "name": "Retrieval Engine Upgrade",
-      "score": 1.323,
-      "verdict": "VIABLE",
-      "contributors": ["Technical Architect", "Retrieval Systems Engineer"],
-      "strongest_points": ["semantic=True default (one-char fix, unanimous STRONG)", "file-rerank by aggregate entry signal", "build eval set first (baseline non-negotiable)", "HyDE query expansion", "token-budget cap instead of file-count cap", "dedup DB before indexing", "query log table for offline eval"],
-      "killed_points": ["cross-encoder rerank (latency vs tiny corpus)", "graph traversal (schema doesn't exist)", "turn-1 noun extraction replacing routing (loses curated ontology)"]
-    },
-    {
-      "rank": 2,
-      "name": "Instrument First, Optimize Second",
-      "score": 1.30,
-      "verdict": "VIABLE",
-      "contributors": ["Critical Challenger", "Behavioral & Observability Analyst"],
-      "strongest_points": ["in-context ignoring is real bottleneck (attention decay)", "log files_loaded per session", "log kontext_query calls + terms", "unknown baseline makes any fix speculation", "semantic/vector search for 24 files is siren song"],
-      "killed_points": ["weekly hit-rate dashboard (1-2 sessions/day = thin signal)", "topic-coverage diff (research-grade NLP)", "Vocality-clock argument treated as false dilemma"]
-    },
-    {
-      "rank": 3,
-      "name": "Prompt-Layer Redesign",
-      "score": 1.224,
-      "verdict": "RISKY",
-      "contributors": ["Product Strategist", "Prompt Engineering Specialist", "Context Window Economist"],
-      "strongest_points": ["hardwire blind-spots to launch topics", "recency-injection mid-session triggers", "frozen MEMORY_INDEX for cache stability", "post-compact re-anchor via index (2-4k vs 18k)", "route-match before kontext_query"],
-      "killed_points": ["Session Intent Declaration (friction, revealed pref against)", "hook=user-msg slot claim (unverified in CC)", "cull files <10% reference rate (no logging layer exists)"]
-    }
-  ],
-  "tiebreak_reasoning": "Top two within 1.77% (under 5% threshold). Retrieval Engine Upgrade wins by score, but challengers flagged that its value collapses if Claude ignores retrieved files (in-context attention decay — strong point from Instrument First). Recommendation: Phase 4 spec folds the cheap instrumentation wins from Approach 2 (files_loaded logging, kontext_query logging, query_log table) into the Retrieval Engine scope, since the retrieval engineer's own eval_set/query_log points already require them. Net: ship Retrieval Upgrade WITH telemetry, not sequentially."
+  "phase": "5_done",
+  "timestamp": "2026-04-18T00:55:00Z",
+  "idea_hash": "self-improving agents implementation decision",
+  "winner": "A-minimal (signal-first, with D fallback trigger)",
+  "runner_up": "D (don't build) — 4.25 on rubric but loses intent signal",
+  "spec_pass_skipped": "user explicitly requested decision+v0.1 scope only, no implementation plan",
+  "report_path": "docs/mastermind-reports/2026-04-18-self-improving-agents-decision.md"
 }

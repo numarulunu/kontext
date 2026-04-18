@@ -44,3 +44,15 @@ tmp-pytest-*/
 .tmp-pytest/
 _logs_scratch/
 _claude_md_deltas.md
+
+# Auto-generated session state (checkpoints, append-only logs)
+docs/mastermind-reports/_mastermind_checkpoint.json
+docs/mastermind-reports/_mastermind.log
+docs/smac-reports/_state/
+docs/smac-reports/_smac.log
+
+# Per-machine Claude Code settings
+.claude/settings.local.json
+
+# pytest-skills sandboxes (created by superpowers test runs)
+tmp/
