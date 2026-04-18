@@ -432,6 +432,55 @@ def _parse_scar_entries(path: Path) -> list[dict]:
     return entries
 
 
+def _cluster_scars(entries: list[dict], *, threshold: float = 0.70) -> list[dict]:
+    """Cluster SCAR entries by text similarity >= threshold.
+
+    Only returns clusters where:
+      - count >= 2
+      - the cluster spans >= 2 distinct `date` values (independence requirement)
+
+    Returns list of dicts: {representative, members, count, dates, max_grade, files}.
+    """
+    if not entries:
+        return []
+
+    # Sort by text for deterministic cluster assignment
+    sorted_entries = sorted(entries, key=lambda e: e["text"])
+    clusters: list[list[dict]] = []
+
+    for e in sorted_entries:
+        assigned = False
+        for cluster in clusters:
+            rep = cluster[0]["text"]
+            if similarity(rep, e["text"]) >= threshold:
+                cluster.append(e)
+                assigned = True
+                break
+        if not assigned:
+            clusters.append([e])
+
+    out: list[dict] = []
+    for cluster in clusters:
+        if len(cluster) < 2:
+            continue
+        dates = sorted({m["date"] for m in cluster if m["date"]})
+        if len(dates) < 2:
+            continue  # same date = not independent
+        # Pick representative as highest-grade member
+        rep = max(cluster, key=lambda m: m["grade"])
+        out.append({
+            "representative": rep["text"],
+            "members": cluster,
+            "count": len(cluster),
+            "dates": dates,
+            "max_grade": rep["grade"],
+            "files": sorted({m["file"] for m in cluster}),
+        })
+    # Sort output by count desc, then max_grade desc
+    out.sort(key=lambda c: (-c["count"], -c["max_grade"]))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
