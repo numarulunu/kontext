@@ -481,6 +481,99 @@ def _cluster_scars(entries: list[dict], *, threshold: float = 0.70) -> list[dict
     return out
 
 
+def _resolve_memory_dir() -> Path | None:
+    """Locate the memory export dir. Order: env -> ~/.claude fallback -> None."""
+    env = os.environ.get("KONTEXT_MEMORY_DIR")
+    if env:
+        p = Path(env).expanduser()
+        return p if p.exists() else None
+    fallback = Path.home() / ".claude" / "projects" / \
+        "C--Users-Gaming-PC-Desktop-Claude-Kontext" / "memory"
+    return fallback if fallback.exists() else None
+
+
+def _resolve_promotions_path() -> Path:
+    env = os.environ.get("KONTEXT_SCAR_PROMOTIONS_PATH")
+    if env:
+        return Path(env).expanduser()
+    return Path(__file__).parent / "_scar_promotions.md"
+
+
+def _render_promotions_md(clusters: list[dict], *, run_ts: str) -> str:
+    if not clusters:
+        return (
+            f"# SCAR Promotions — {run_ts}\n\n"
+            "No clusters found this run (no SCAR patterns appeared in >=2 "
+            "independent entries from distinct dates).\n"
+        )
+    lines = [f"# SCAR Promotions — {run_ts}", ""]
+    lines.append(
+        f"Found **{len(clusters)}** cluster(s). Review each, then either:\n"
+        "- write a `kontext_write` rule that prevents recurrence, OR\n"
+        "- delete its block below and commit to dismiss.\n"
+    )
+    for i, c in enumerate(clusters, start=1):
+        lines.append(f"## Cluster {i} — count={c['count']}, max_grade={c['max_grade']}")
+        lines.append("")
+        lines.append(f"**Representative:** {c['representative']}")
+        lines.append("")
+        lines.append(f"**Distinct dates:** {', '.join(c['dates'])}")
+        lines.append(f"**Source files:** {', '.join(Path(f).name for f in c['files'])}")
+        lines.append("")
+        lines.append("**Members:**")
+        for m in c["members"]:
+            lines.append(
+                f"- `[{m['source']}]` {m['text']} (grade {m['grade']}, "
+                f"{Path(m['file']).name}:{m['line']})"
+            )
+        lines.append("")
+        lines.append("**Suggested rule:** _<fill in to promote; delete this block to dismiss>_")
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def phase_scar_promote(db: KontextDB, dry_run: bool = False) -> dict:
+    """Scan project_*_log.md files, cluster SCAR entries with >=2 independent
+    occurrences, and emit _scar_promotions.md for manual review.
+
+    Does NOT modify the Kontext DB. Output is a single git-tracked file the
+    user reviews. Revert = `git checkout _scar_promotions.md`.
+    """
+    memory_dir = _resolve_memory_dir()
+    promotions_path = _resolve_promotions_path()
+
+    if memory_dir is None:
+        _log.warning("SCAR_PROMOTE: no memory dir found (set KONTEXT_MEMORY_DIR)")
+        return {"clusters_found": 0, "entries_scanned": 0, "files_scanned": 0, "skipped": True}
+
+    log_files = sorted(memory_dir.glob("project_*_log.md"))
+    all_entries: list[dict] = []
+    for f in log_files:
+        all_entries.extend(_parse_scar_entries(f))
+
+    clusters = _cluster_scars(all_entries, threshold=0.70)
+
+    run_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if not dry_run:
+        body = _render_promotions_md(clusters, run_ts=run_ts)
+        promotions_path.write_text(body, encoding="utf-8")
+        _log.info(
+            f"SCAR_PROMOTE wrote={promotions_path} clusters={len(clusters)} "
+            f"entries={len(all_entries)} files={len(log_files)}"
+        )
+    else:
+        _log.info(
+            f"SCAR_PROMOTE dry-run clusters={len(clusters)} "
+            f"entries={len(all_entries)} files={len(log_files)}"
+        )
+
+    return {
+        "clusters_found": len(clusters),
+        "entries_scanned": len(all_entries),
+        "files_scanned": len(log_files),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------

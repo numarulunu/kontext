@@ -94,3 +94,64 @@ def test_cluster_scars_requires_distinct_dates():
 def test_cluster_scars_empty_input_returns_empty():
     from dream import _cluster_scars
     assert _cluster_scars([], threshold=0.70) == []
+
+
+def test_phase_scar_promote_writes_promotions_file(db, tmp_path, monkeypatch):
+    from dream import phase_scar_promote
+
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    (memory_dir / "project_alpha_log.md").write_text(
+        "[Claude 2026-04-01] SCAR: missing lockfile check on write. Grade: 9\n"
+        "[Claude 2026-04-08] SCAR: no lockfile check on write path. Grade: 8\n"
+        "[Claude 2026-04-15] ARCH: decided on WAL mode. Grade: 5\n",
+        encoding="utf-8",
+    )
+    (memory_dir / "project_beta_log.md").write_text(
+        "[Claude 2026-04-02] SCAR: totally different pytest leak. Grade: 6\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("KONTEXT_MEMORY_DIR", str(memory_dir))
+    promotions = tmp_path / "_scar_promotions.md"
+    monkeypatch.setenv("KONTEXT_SCAR_PROMOTIONS_PATH", str(promotions))
+
+    result = phase_scar_promote(db, dry_run=False)
+    assert result["clusters_found"] == 1
+    assert result["entries_scanned"] >= 3
+    assert result["files_scanned"] == 2
+    assert promotions.exists()
+    body = promotions.read_text(encoding="utf-8")
+    assert "lockfile" in body.lower()
+    assert "2026-04-01" in body
+    assert "2026-04-08" in body
+
+
+def test_phase_scar_promote_dry_run_does_not_write(db, tmp_path, monkeypatch):
+    from dream import phase_scar_promote
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    (memory_dir / "project_a_log.md").write_text(
+        "[Claude 2026-04-01] SCAR: shared bug. Grade: 7\n"
+        "[Claude 2026-04-10] SCAR: shared bug variant. Grade: 6\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("KONTEXT_MEMORY_DIR", str(memory_dir))
+    promotions = tmp_path / "_scar_promotions.md"
+    monkeypatch.setenv("KONTEXT_SCAR_PROMOTIONS_PATH", str(promotions))
+
+    result = phase_scar_promote(db, dry_run=True)
+    assert result["clusters_found"] >= 1
+    assert not promotions.exists()
+
+
+def test_phase_scar_promote_handles_missing_memory_dir(db, tmp_path, monkeypatch):
+    from dream import phase_scar_promote
+    monkeypatch.setenv("KONTEXT_MEMORY_DIR", str(tmp_path / "does_not_exist"))
+    monkeypatch.setenv(
+        "KONTEXT_SCAR_PROMOTIONS_PATH", str(tmp_path / "_scar_promotions.md")
+    )
+    result = phase_scar_promote(db, dry_run=False)
+    assert result["clusters_found"] == 0
+    assert result["files_scanned"] == 0
+    assert result.get("skipped") is True
