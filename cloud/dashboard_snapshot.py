@@ -13,6 +13,8 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
+from cloud.dashboard_synth import synthesize_entries
+
 
 _SNAPSHOT_CACHE: dict[str, Any] = {"built_at": 0.0, "payload": None}
 _CACHE_TTL_SEC = 30.0
@@ -126,8 +128,12 @@ def _build_snapshot_uncached(db_path: str) -> dict[str, Any]:
             "SELECT file, fact FROM entries WHERE fact IS NOT NULL"
         ).fetchall()
         file_text: dict[str, str] = defaultdict(str)
+        file_facts: dict[str, list[str]] = defaultdict(list)
         for fr in fact_rows:
-            file_text[fr["file"]] += (fr["fact"] or "").lower() + " · "
+            fact = fr["fact"] or ""
+            file_text[fr["file"]] += fact.lower() + " · "
+            if fact.strip():
+                file_facts[fr["file"]].append(fact)
 
         entity_names: set[str] = set()
         for r in rel_rows:
@@ -170,17 +176,27 @@ def _build_snapshot_uncached(db_path: str) -> dict[str, Any]:
                 relations_by_file[fb].append(fa)
 
         file_to_id: dict[str, str] = {r["file"]: f"e{i+1:03d}" for i, r in enumerate(all_rows)}
+
+        # LLM synthesis: `why` + `body` for each entry. Cache hits are free;
+        # misses hit Haiku 4.5 in parallel and persist to dashboard_synth_cache.
+        synth_inputs = [
+            (r["file"], r["type"] or "user", file_facts.get(r["file"], []))
+            for r in all_rows
+        ]
+        synth_results = synthesize_entries(db_path, synth_inputs)
+
         entries: list[dict[str, Any]] = []
         for i, r in enumerate(all_rows):
             last_ms = _parse_ts_ms(r["last_used"], now_ms)
             created_ms = _parse_ts_ms(r["created"], now_ms)
             days_since = max(0.0, (now_ms - last_ms) / day_ms)
             decay = round(1 - math.exp(-days_since * 0.03), 3)
-            body = r["body"] or ""
-            if len(body) > 600:
-                body = body[:600] + "…"
+            body_fallback = r["body"] or ""
+            if len(body_fallback) > 600:
+                body_fallback = body_fallback[:600] + "…"
             rels = relations_by_file.get(r["file"], [])
             rel_ids = [file_to_id[f] for f in rels if f in file_to_id][:6]
+            synth = synth_results.get(r["file"], {})
             entries.append({
                 "id": file_to_id[r["file"]],
                 "file": r["file"],
@@ -192,8 +208,8 @@ def _build_snapshot_uncached(db_path: str) -> dict[str, Any]:
                 "created": created_ms,
                 "uses": int(r["uses"] or 0),
                 "relations": rel_ids,
-                "why": f"{r['fact_count']} facts captured",
-                "body": body,
+                "why": synth.get("why") or f"{r['fact_count']} facts captured",
+                "body": synth.get("body") or body_fallback,
             })
 
         # Devices
