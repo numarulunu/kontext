@@ -390,6 +390,49 @@ def phase_purge(db: KontextDB, dry_run: bool = False) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Phase 6: SCAR auto-promotion (self-improvement loop v0.1)
+# ---------------------------------------------------------------------------
+
+_SCAR_LINE_RE = re.compile(
+    r"^\[(?P<source>[^\]]+)\]\s+SCAR:\s*(?P<text>.*?)(?:\.\s*Grade:\s*(?P<grade>\d+))?\s*$"
+)
+_DATE_IN_SOURCE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+
+
+def _parse_scar_entries(path: Path) -> list[dict]:
+    """Parse SCAR entries from a project_*_log.md file.
+
+    Returns list of dicts with keys: source, date, text, grade, file, line.
+    Lines that don't match the SCAR pattern are skipped (ARCH/EVO/OPEN/PERF are ignored).
+    """
+    entries: list[dict] = []
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return entries
+
+    for lineno, line in enumerate(raw.splitlines(), start=1):
+        m = _SCAR_LINE_RE.match(line.strip())
+        if not m:
+            continue
+        source = m.group("source").strip()
+        text = m.group("text").strip().rstrip(".")
+        grade_s = m.group("grade")
+        grade = int(grade_s) if grade_s else 0
+        dm = _DATE_IN_SOURCE_RE.search(source)
+        date = dm.group(1) if dm else ""
+        entries.append({
+            "source": source,
+            "date": date,
+            "text": text,
+            "grade": grade,
+            "file": str(path),
+            "line": lineno,
+        })
+    return entries
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
