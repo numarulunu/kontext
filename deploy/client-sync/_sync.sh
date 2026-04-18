@@ -41,7 +41,10 @@ from export import export_all, export_memory_index
 t0 = time.time()
 db = KontextDB('/root/.kontext/server.db')
 state = _require_state(db)
-client = _authed_client(state)
+# Pass explicit keystore_root — default resolution doesn't point at
+# /root/.kontext/keys/ in all container layouts (notably linuxserver.io
+# code-server, where HOME=/config), which would produce a 401 no-token.
+client = _authed_client(state, keystore_root=Path('/root/.kontext/keys'))
 ws, dev = state['workspace_id'], state['device_id']
 
 # Phase 1: self-seed push cursor on first run so we never attempt to
