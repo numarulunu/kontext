@@ -98,6 +98,88 @@ def export_all(db: KontextDB, output_dir: Path):
         (output_dir / filename).write_text(content, encoding="utf-8")
 
 
+_CORE_VOCAB = [
+    "Vocality", "Melocchi", "Vázquez", "PFA", "ANAF", "Stripe", "Preply",
+    "Skool", "Medical Noir", "Void Strategy", "Luiza", "Palazu",
+    "Claude Max x20", "Kontext", "Mastermind", "SMAC", "Hetzner",
+    "Coolify", "Pangolin", "Minio", "n8n",
+]
+
+
+def _top_entries(db: KontextDB, file: str, min_grade: int, limit: int) -> list[dict]:
+    """Return active, non-superseded entries from `file` at or above min_grade,
+    sorted by grade desc. Best-effort — missing files return []."""
+    rows = db.get_entries(file=file, tier="active", min_grade=min_grade)
+    out = []
+    for r in rows:
+        if r.get("superseded_by"):
+            continue
+        out.append(r)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def compile_user_core(db: KontextDB, output_dir: Path) -> None:
+    """Dynamic compile of user_core.md from highest-grade identity entries.
+
+    Regenerated on every export. Dynamic by construction — as grades shift,
+    entries decay, or new facts land via kontext_write, the next export
+    refreshes the core. No hand editing.
+    """
+    identity   = _top_entries(db, "user_identity.md", min_grade=10, limit=12)
+    projects   = _top_entries(db, "project_goals.md", min_grade=9, limit=20)
+    psych      = _top_entries(db, "user_psychology.md", min_grade=9, limit=12)
+    blind      = _top_entries(db, "user_blind_spots.md", min_grade=9, limit=12)
+    comms      = _top_entries(db, "feedback_ai_interaction.md", min_grade=10, limit=10)
+    strengths  = _top_entries(db, "user_strengths.md", min_grade=8, limit=5)
+
+    def _dedup(entries: list[dict]) -> list[dict]:
+        # Projects + patterns get listed twice in source files when the
+        # same fact was captured from different conversations. Keep the
+        # highest-grade instance only.
+        seen: set[str] = set()
+        out: list[dict] = []
+        for e in entries:
+            key = " ".join(e["fact"].lower().split())[:80]
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(e)
+        return out
+
+    projects = _dedup(projects)[:10]
+    patterns = _dedup(sorted(psych + blind, key=lambda e: -float(e["grade"])))[:8]
+
+    def section(title: str, entries: list[dict]) -> list[str]:
+        if not entries:
+            return []
+        out = [f"## {title}", ""]
+        for e in entries:
+            out.append(f"- {e['fact']}")
+        out.append("")
+        return out
+
+    lines = [
+        "---",
+        "name: User Core",
+        "description: Always-on identity block — compiled from database on every export. "
+        "Describes who you're talking to, not how to style answers. Never cite, never "
+        "frame responses around it, never explain his own patterns back to him.",
+        "type: user",
+        "---",
+        "",
+    ]
+    lines += section("Identity", identity)
+    lines += section("What he's building", projects)
+    lines += section("Load-bearing patterns", patterns)
+    lines += section("Strengths", strengths)
+    lines += section("Communication", comms)
+    lines += ["## Vocabulary — never define", "", ", ".join(_CORE_VOCAB), ""]
+
+    (output_dir / "user_core.md").write_text("\n".join(lines), encoding="utf-8")
+
+
 def export_memory_index(db: KontextDB, output_dir: Path):
     """Generate MEMORY.md index from database.
 
@@ -142,6 +224,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     export_all(db, output_dir)
     export_memory_index(db, output_dir)
+    compile_user_core(db, output_dir)
     files = db.list_files()
     print(f"Exported {len(files)} files to {output_dir}")
     db.close()

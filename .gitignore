@@ -42,3 +42,5 @@ kontext.cloud.json
 # Pytest skill shim tmpdirs
 tmp-pytest-*/
 .tmp-pytest/
+_logs_scratch/
+_claude_md_deltas.md
