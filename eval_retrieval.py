@@ -241,6 +241,80 @@ def _mean(xs: list[float]) -> float:
     return sum(xs) / len(xs) if xs else 0.0
 
 
+def _persist_rows(db, rows: list[dict], *, run_id: str, mode: str, rank: str,
+                  git_sha: str, schema_version: int) -> int:
+    """Persist eval rows to retrieval_evals table. Returns count inserted."""
+    cur = db.conn.cursor()
+    inserted = 0
+    for r in rows:
+        cur.execute(
+            """INSERT INTO retrieval_evals
+               (run_id, query_text, category, held_out, recall_at_3, recall_at_5,
+                mrr, latency_ms, mode, rank, top_files, git_sha, schema_version)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                run_id,
+                r["query"],
+                r.get("category", ""),
+                1 if r.get("held_out") else 0,
+                float(r["recall_at_3"]),
+                float(r["recall_at_5"]),
+                float(r["mrr"]),
+                int(r["latency_ms"]),
+                mode,
+                rank,
+                r.get("top_files", ""),
+                git_sha,
+                schema_version,
+            ),
+        )
+        inserted += 1
+    db.conn.commit()
+    return inserted
+
+
+def _compute_delta(db, *, current_run_id: str, mode: str, rank: str) -> dict | None:
+    """Compute mean-metric delta vs the most recent prior run of same mode+rank.
+
+    Returns None if there's no prior run. Otherwise returns:
+        {"prior_run_id", "recall_at_3_delta", "recall_at_5_delta",
+         "mrr_delta", "latency_ms_delta", "n_current", "n_prior"}
+    """
+    prior = db.conn.execute(
+        """SELECT run_id FROM retrieval_evals
+           WHERE mode=? AND rank=? AND run_id != ?
+           ORDER BY ts DESC LIMIT 1""",
+        (mode, rank, current_run_id),
+    ).fetchone()
+    if prior is None:
+        return {"prior_run_id": None}
+    prior_run_id = prior[0]
+
+    def _means(run_id: str):
+        row = db.conn.execute(
+            """SELECT AVG(recall_at_3), AVG(recall_at_5), AVG(mrr),
+                      AVG(latency_ms), COUNT(*) FROM retrieval_evals
+               WHERE run_id=? AND mode=? AND rank=?""",
+            (run_id, mode, rank),
+        ).fetchone()
+        return {
+            "r3": row[0] or 0.0, "r5": row[1] or 0.0,
+            "mrr": row[2] or 0.0, "lat": row[3] or 0.0, "n": row[4] or 0,
+        }
+
+    cur = _means(current_run_id)
+    prv = _means(prior_run_id)
+    return {
+        "prior_run_id": prior_run_id,
+        "recall_at_3_delta": cur["r3"] - prv["r3"],
+        "recall_at_5_delta": cur["r5"] - prv["r5"],
+        "mrr_delta": cur["mrr"] - prv["mrr"],
+        "latency_ms_delta": cur["lat"] - prv["lat"],
+        "n_current": cur["n"],
+        "n_prior": prv["n"],
+    }
+
+
 def _bucketed_summary(rows: list[dict]) -> str:
     """Pretty-print mean recall@3 / recall@5 / MRR per category x (train|held-out)."""
     from collections import defaultdict
@@ -389,6 +463,49 @@ def main() -> int:
     print()
     print(f"CSV written: {out_path}")
     _log.info(f"END rows={len(rows)} out={out_path}")
+
+    # Persist to retrieval_evals for pre/post delta tracking (v0.1 self-improvement loop)
+    try:
+        import subprocess
+        git_sha = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=str(ROOT), text=True
+        ).strip()
+    except Exception:
+        git_sha = ""
+    try:
+        schema_version = int(db.conn.execute(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version"
+        ).fetchone()[0])
+    except Exception:
+        schema_version = 0
+    try:
+        inserted = _persist_rows(db, rows, run_id=ts, mode=mode, rank=args.rank,
+                                 git_sha=git_sha, schema_version=schema_version)
+        print(f"Persisted {inserted} rows to retrieval_evals (run_id={ts}).")
+        _log.info(f"PERSISTED rows={inserted} run_id={ts} git={git_sha} schema={schema_version}")
+    except Exception as e:
+        print(f"WARNING: persist to retrieval_evals failed: {e}", file=sys.stderr)
+        _log.warning(f"PERSIST_FAIL: {e}")
+
+    # Compute delta vs most recent prior run of same mode+rank
+    try:
+        delta = _compute_delta(db, current_run_id=ts, mode=mode, rank=args.rank)
+        if delta is None or delta.get("prior_run_id") is None:
+            print("Delta: (no prior run of this mode+rank — baseline established)")
+        else:
+            sign = lambda x: ("+" if x >= 0 else "") + f"{x:.3f}"
+            print()
+            print("Delta vs prior run:")
+            print(f"  prior_run_id   = {delta['prior_run_id']}")
+            print(f"  recall@3 delta = {sign(delta['recall_at_3_delta'])} (n={delta['n_current']} vs {delta['n_prior']})")
+            print(f"  recall@5 delta = {sign(delta['recall_at_5_delta'])}")
+            print(f"  mrr delta      = {sign(delta['mrr_delta'])}")
+            print(f"  latency delta  = {sign(delta['latency_ms_delta'])}ms")
+        _log.info(f"DELTA {delta}")
+    except Exception as e:
+        print(f"WARNING: delta computation failed: {e}", file=sys.stderr)
+        _log.warning(f"DELTA_FAIL: {e}")
+
     return 0
 
 
