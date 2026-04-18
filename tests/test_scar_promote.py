@@ -162,3 +162,61 @@ def test_phase_scar_promote_registered_in_phases_dict():
     from dream import PHASES, phase_scar_promote
     assert "scar_promote" in PHASES
     assert PHASES["scar_promote"] is phase_scar_promote
+
+
+def test_dream_cli_runs_scar_promote_phase_only(tmp_path):
+    """Invoking dream.py --phase scar_promote runs only that phase and exits 0."""
+    import os
+    import subprocess
+    import sys
+
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    (memory_dir / "project_alpha_log.md").write_text(
+        "[Claude 2026-04-01] SCAR: same bug one way. Grade: 7\n"
+        "[Claude 2026-04-10] SCAR: same bug another phrasing. Grade: 7\n",
+        encoding="utf-8",
+    )
+    promotions = tmp_path / "_scar_promotions.md"
+    env = {
+        **os.environ,
+        "KONTEXT_MEMORY_DIR": str(memory_dir),
+        "KONTEXT_SCAR_PROMOTIONS_PATH": str(promotions),
+        "KONTEXT_DB_PATH": str(tmp_path / "test.db"),
+    }
+    repo_root = Path(__file__).resolve().parent.parent
+    result = subprocess.run(
+        [sys.executable, "dream.py", "--phase", "scar_promote"],
+        cwd=str(repo_root),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    assert promotions.exists()
+
+
+def test_dream_full_cycle_includes_scar_promote(db, tmp_path, monkeypatch):
+    """Running run_dream() (the full cycle) invokes phase_scar_promote alongside
+    the other phases. Guards against future regressions that silently drop the
+    phase from the PHASES dispatch or the runner loop."""
+    from dream import dream
+
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    (memory_dir / "project_gamma_log.md").write_text(
+        "[Claude 2026-04-01] SCAR: duplicate inserts in add_entry. Grade: 8\n"
+        "[Claude 2026-04-09] SCAR: duplicate inserts during add_entry path. Grade: 7\n",
+        encoding="utf-8",
+    )
+    promotions = tmp_path / "_scar_promotions.md"
+    monkeypatch.setenv("KONTEXT_MEMORY_DIR", str(memory_dir))
+    monkeypatch.setenv("KONTEXT_SCAR_PROMOTIONS_PATH", str(promotions))
+
+    report = dream(db, dry_run=True)
+    assert "scar_promote" in report, f"scar_promote missing from report: {list(report.keys())}"
+    scar = report["scar_promote"]
+    assert scar["files_scanned"] == 1
+    assert scar["entries_scanned"] == 2
+    assert scar["clusters_found"] == 1
