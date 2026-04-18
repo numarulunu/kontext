@@ -155,3 +155,10 @@ def test_phase_scar_promote_handles_missing_memory_dir(db, tmp_path, monkeypatch
     assert result["clusters_found"] == 0
     assert result["files_scanned"] == 0
     assert result.get("skipped") is True
+
+
+def test_phase_scar_promote_registered_in_phases_dict():
+    """phase_scar_promote must be registered in the PHASES dispatch dict."""
+    from dream import PHASES, phase_scar_promote
+    assert "scar_promote" in PHASES
+    assert PHASES["scar_promote"] is phase_scar_promote

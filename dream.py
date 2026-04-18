@@ -6,11 +6,13 @@ Runs periodically to clean, deduplicate, normalize, and compress
 the memory database. Modeled after the brain's consolidation during sleep.
 
 Phases:
-  1. Dedup     — merge near-duplicate entries (same file, similar fact)
-  2. Normalize — convert relative dates to absolute, clean formatting
-  3. Resolve   — auto-resolve stale conflicts (>7 days, same file, one is newer)
-  4. Compress  — summarize cold-tier entries into compact one-liners
-  5. Purge     — delete entries with grade <= 1 that haven't been accessed in 120+ days
+  1. Dedup       — merge near-duplicate entries (same file, similar fact)
+  2. Normalize   — convert relative dates to absolute, clean formatting
+  3. Resolve     — auto-resolve stale conflicts (>7 days, same file, one is newer)
+  4. Compress    — summarize cold-tier entries into compact one-liners
+  5. Purge       — delete entries with grade <= 1 that haven't been accessed in 120+ days
+  6. ScarPromote — scan project_*_log.md, cluster SCARs appearing in ≥2 independent
+                   entries, emit _scar_promotions.md for manual review
 
 Usage:
     python dream.py              # Full consolidation
@@ -584,6 +586,7 @@ PHASES = {
     "resolve": phase_resolve,
     "compress": phase_compress,
     "purge": phase_purge,
+    "scar_promote": phase_scar_promote,
 }
 
 
