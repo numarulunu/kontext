@@ -1,0 +1,58 @@
+version: 1
+
+# Routing config — controls which memory files auto-load on session start and
+# per-prompt. Copy this to ~/.claude/kontext_routing.yaml and customize for your
+# personal vocabulary, projects, and people.
+
+memory_root: ~/.claude/projects/<your-project-id>/memory
+
+always_load:
+  - user_core.md
+
+default_fallback:
+  - user_identity.md
+  - user_core.md
+
+# Fires when message contains any topic keyword as substring or stem-match
+# but no exact rule matched. Broader than default_fallback.
+fuzzy_fallback:
+  - user_identity.md
+  - user_core.md
+  - user_psychology.md
+
+max_files_per_turn: 10
+
+token_budget_hint: 20000
+
+topic_routes:
+  # Personal vocabulary examples — replace with your own
+  - keywords: [work, career, job, profession]
+    files: [user_identity.md]
+
+  - keywords: [goals, plans, revenue, launch, roadmap, milestone, income]
+    files: [project_goals.md]
+
+  # Add anti_keywords to suppress false positives
+  - keywords: [build, building, tool, app, system, script]
+    anti_keywords: ["build a relationship", "build trust", "nervous system"]
+    files: [project_goals.md, user_identity.md]
+
+  # Multi-word keywords match as substrings
+  - keywords: [stuck, procrastinate, blocked, "putting off", paralyzed]
+    anti_keywords: ["git blocked", "port blocked", "stuck process"]
+    files: [user_blind_spots.md]
+
+cwd_routes:
+  # First match wins — put specific paths before generic ones
+  - path_contains: ["Desktop/MyProject", "Desktop\\MyProject"]
+    files: [user_core.md, project_myproject_log.md]
+
+  # Generic parent fallback
+  - path_contains: ["Desktop/Claude", "Desktop\\Claude"]
+    files: [user_core.md, project_goals.md]
+
+# Code suppression: requires BOTH a code_task_keyword AND a code_context_keyword
+# to fire. Prevents "fix the copy tone" from being misclassified as a code task.
+code_task_keywords: [debug, bug, fix, error, exception, "stack trace", commit, git, pytest, npm, typescript, refactor, "code review"]
+
+code_context_keywords: [function, class, method, variable, import, module, repo, repository, commit, branch, merge, "pull request", pr, pytest, npm, pip, docker, kubernetes, traceback, exception, ".py", ".ts", ".js", ".sh", ".sql", api, sdk, mcp, hook, script, column, table, schema, query, database]
