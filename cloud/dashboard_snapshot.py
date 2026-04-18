@@ -1,0 +1,277 @@
+"""Build the JSON payload consumed by the SPA at /data.js.
+
+The SPA expects `window.KONTEXT_DATA` with a specific shape (see
+static_dashboard/data.js for the mock reference). This module queries the
+real SQLite library and returns the same shape populated from the live DB.
+"""
+from __future__ import annotations
+
+import math
+import sqlite3
+import time
+from datetime import datetime, timezone
+from typing import Any
+
+
+def _parse_ts_ms(ts: str | None, fallback_ms: int) -> int:
+    if not ts:
+        return fallback_ms
+    s = str(ts).strip()
+    if not s:
+        return fallback_ms
+    if s.endswith("Z"):
+        s = s[:-1]
+    s = s.replace("T", " ")
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M"):
+        try:
+            dt = datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+        except ValueError:
+            continue
+    return fallback_ms
+
+
+def _tier_from_grade(grade: float | None) -> str:
+    g = grade or 5.0
+    if g >= 8.5:
+        return "S"
+    if g >= 7.0:
+        return "A"
+    if g >= 5.0:
+        return "B"
+    return "C"
+
+
+def _role_from_class(device_class: str | None) -> str:
+    if device_class == "interactive":
+        return "primary"
+    if device_class == "server":
+        return "replica"
+    return "replica"
+
+
+def build_snapshot(db_path: str) -> dict[str, Any]:
+    now_ms = int(time.time() * 1000)
+    day_ms = 86_400_000
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        # Entries: one SPA entry per memory file, aggregated from entries+file_meta.
+        file_rows = conn.execute(
+            """
+            SELECT fm.filename AS file,
+                   COALESCE(fm.file_type, 'user') AS type,
+                   COALESCE(fm.description, '') AS desc,
+                   COUNT(e.id) AS fact_count,
+                   AVG(e.grade) AS avg_grade,
+                   COALESCE(SUM(e.access_count), 0) AS uses,
+                   MAX(e.last_accessed) AS last_used,
+                   MIN(e.created_at) AS created,
+                   GROUP_CONCAT(e.fact, ' · ') AS body
+            FROM file_meta fm
+            LEFT JOIN entries e ON e.file = fm.filename
+            GROUP BY fm.filename
+            ORDER BY fm.filename
+            """
+        ).fetchall()
+
+        # Cover entries that exist without a file_meta row.
+        orphan_rows = conn.execute(
+            """
+            SELECT e.file AS file,
+                   'user' AS type,
+                   '' AS desc,
+                   COUNT(e.id) AS fact_count,
+                   AVG(e.grade) AS avg_grade,
+                   COALESCE(SUM(e.access_count), 0) AS uses,
+                   MAX(e.last_accessed) AS last_used,
+                   MIN(e.created_at) AS created,
+                   GROUP_CONCAT(e.fact, ' · ') AS body
+            FROM entries e
+            LEFT JOIN file_meta fm ON fm.filename = e.file
+            WHERE fm.filename IS NULL
+            GROUP BY e.file
+            """
+        ).fetchall()
+        all_rows = list(file_rows) + list(orphan_rows)
+
+        relations_by_file: dict[str, list[str]] = {}
+        rel_rows = conn.execute(
+            "SELECT entity_a, entity_b FROM relations"
+        ).fetchall()
+        for r in rel_rows:
+            a, b = r["entity_a"], r["entity_b"]
+            relations_by_file.setdefault(a, []).append(b)
+            relations_by_file.setdefault(b, []).append(a)
+
+        file_to_id: dict[str, str] = {r["file"]: f"e{i+1:03d}" for i, r in enumerate(all_rows)}
+        entries: list[dict[str, Any]] = []
+        for i, r in enumerate(all_rows):
+            last_ms = _parse_ts_ms(r["last_used"], now_ms)
+            created_ms = _parse_ts_ms(r["created"], now_ms)
+            days_since = max(0.0, (now_ms - last_ms) / day_ms)
+            decay = round(1 - math.exp(-days_since * 0.03), 3)
+            body = r["body"] or ""
+            if len(body) > 600:
+                body = body[:600] + "…"
+            rels = relations_by_file.get(r["file"], [])
+            rel_ids = [file_to_id[f] for f in rels if f in file_to_id][:6]
+            entries.append({
+                "id": file_to_id[r["file"]],
+                "file": r["file"],
+                "type": r["type"] or "user",
+                "tier": _tier_from_grade(r["avg_grade"]),
+                "desc": r["desc"] or f"{r['fact_count']} facts",
+                "decay": decay,
+                "lastUsed": last_ms,
+                "created": created_ms,
+                "uses": int(r["uses"] or 0),
+                "relations": rel_ids,
+                "why": f"{r['fact_count']} facts captured",
+                "body": body,
+            })
+
+        # Devices
+        device_rows = conn.execute(
+            """
+            SELECT d.id, d.label, d.device_class, d.revoked_at,
+                   MAX(h.created_at) AS last_op,
+                   SUM(CASE WHEN h.created_at > datetime('now', '-1 day') THEN 1 ELSE 0 END) AS cap_24h
+            FROM devices d
+            LEFT JOIN history_ops h ON h.device_id = d.id
+            GROUP BY d.id
+            ORDER BY d.enrolled_at ASC
+            """
+        ).fetchall()
+        devices = []
+        for d in device_rows:
+            last_ms = _parse_ts_ms(d["last_op"], now_ms)
+            status = "offline" if d["revoked_at"] else ("online" if (now_ms - last_ms) < 10 * 60_000 else "idle")
+            devices.append({
+                "id": d["id"][:12],
+                "label": d["label"],
+                "role": _role_from_class(d["device_class"]),
+                "last": last_ms,
+                "captures24h": int(d["cap_24h"] or 0),
+                "status": status,
+            })
+
+        # Per-day counts for the 14-day history chart
+        tool_counts = {row["d"]: row["n"] for row in conn.execute(
+            "SELECT DATE(created_at) AS d, COUNT(*) AS n FROM tool_events "
+            "WHERE created_at > datetime('now', '-15 days') GROUP BY DATE(created_at)"
+        ).fetchall()}
+        prompt_counts = {row["d"]: row["n"] for row in conn.execute(
+            "SELECT DATE(created_at) AS d, COUNT(*) AS n FROM user_prompts "
+            "WHERE created_at > datetime('now', '-15 days') GROUP BY DATE(created_at)"
+        ).fetchall()}
+
+        total_files = len(entries)
+        total_entries = sum(int(r["fact_count"] or 0) for r in all_rows)
+        files_active_30d = sum(1 for e in entries if e["decay"] < 0.6)
+        relation_count = len(rel_rows)
+
+        oldest_created = conn.execute(
+            "SELECT MIN(created_at) AS t FROM entries"
+        ).fetchone()["t"]
+        age_days = max(1, (now_ms - _parse_ts_ms(oldest_created, now_ms)) // day_ms)
+
+        breadth = min(100, int(total_files / 40 * 100))
+        depth = min(100, int(total_entries / 200 * 100))
+        recency = min(100, int(files_active_30d / max(total_files, 1) * 100))
+        longevity = min(100, int(age_days / 180 * 100))
+        linkage = min(100, int(relation_count / max(total_files, 1) * 50))
+
+        history = []
+        for d_off in range(13, -1, -1):
+            ts = now_ms - d_off * day_ms
+            date_str = datetime.fromtimestamp(ts / 1000, timezone.utc).strftime("%Y-%m-%d")
+            history.append({
+                "t": ts,
+                "breadth": breadth,
+                "depth": depth,
+                "recency": recency,
+                "longevity": longevity,
+                "linkage": linkage,
+                "captures": int(tool_counts.get(date_str, 0)),
+                "prompts": int(prompt_counts.get(date_str, 0)),
+            })
+
+        weights = {"breadth": 0.18, "depth": 0.22, "recency": 0.25, "longevity": 0.15, "linkage": 0.20}
+        dims_current = history[-1]
+        dims_prev = history[-8]
+        score = round(sum(dims_current[k] * w for k, w in weights.items()))
+        prev_score = round(sum(dims_prev[k] * w for k, w in weights.items()))
+
+        # Feed: recent history_ops
+        feed_rows = conn.execute(
+            """
+            SELECT h.created_at, h.op_kind, h.entity_type, h.entity_id,
+                   d.label AS device_label, d.id AS device_id
+            FROM history_ops h
+            LEFT JOIN devices d ON d.id = h.device_id
+            ORDER BY h.created_at DESC LIMIT 40
+            """
+        ).fetchall()
+        feed = []
+        for f in feed_rows:
+            ev = {
+                "create": "capture",
+                "update": "capture",
+                "promote": "promote",
+                "decay": "decay",
+                "link": "link",
+                "sync": "sync",
+            }.get(str(f["op_kind"]).lower(), str(f["op_kind"]).lower() or "capture")
+            feed.append({
+                "t": _parse_ts_ms(f["created_at"], now_ms),
+                "ev": ev,
+                "file": (f["entity_id"] or "—")[:60],
+                "action": f["op_kind"] or "—",
+                "device": (f["device_id"] or "—")[:12],
+                "source": f["entity_type"] or "",
+            })
+
+        history_ops_total = conn.execute(
+            "SELECT COUNT(*) AS n FROM history_ops"
+        ).fetchone()["n"]
+        canonical = sum(1 for e in entries if e["tier"] in ("S", "A"))
+        tool_events_24h = conn.execute(
+            "SELECT COUNT(*) AS n FROM tool_events WHERE created_at > datetime('now', '-1 day')"
+        ).fetchone()["n"]
+        prompts_24h = conn.execute(
+            "SELECT COUNT(*) AS n FROM user_prompts WHERE created_at > datetime('now', '-1 day')"
+        ).fetchone()["n"]
+        entries_touched_24h = conn.execute(
+            "SELECT COUNT(DISTINCT file) AS n FROM entries WHERE last_accessed > datetime('now', '-1 day')"
+        ).fetchone()["n"]
+        last_capture = conn.execute(
+            "SELECT MAX(created_at) AS t FROM history_ops"
+        ).fetchone()["t"]
+        last_capture_ms = _parse_ts_ms(last_capture, now_ms)
+
+        return {
+            "now": now_ms,
+            "entries": entries,
+            "devices": devices,
+            "history": history,
+            "feed": feed,
+            "score": score,
+            "prevScore": prev_score,
+            "dimensions": dims_current,
+            "prevDimensions": dims_prev,
+            "totals": {
+                "entries": total_entries,
+                "devices": len(devices),
+                "histOps": int(history_ops_total),
+                "canonical": canonical,
+            },
+            "activity24h": {
+                "toolEvents": int(tool_events_24h),
+                "prompts": int(prompts_24h),
+                "entriesTouched": int(entries_touched_24h),
+                "lastCaptureAgo": max(0, now_ms - last_capture_ms),
+            },
+        }
+    finally:
+        conn.close()

@@ -80,9 +80,6 @@ def build_app(db) -> FastAPI:
     app = FastAPI(title="Kontext Cloud Control Plane")
     db_path = db.db_path
 
-    from cloud.dashboard import register_dashboard
-    register_dashboard(app, db_path)
-
     def require_workspace_auth(
         workspace_id: str,
         authorization: str | None = Header(default=None),
@@ -278,5 +275,8 @@ def build_app(db) -> FastAPI:
             if items:
                 req_db.advance_sync_cursor(workspace_id, device_id, lane, items[-1]["op_id"])
         return {"items": items, "count": len(items)}
+
+    from cloud.dashboard import register_dashboard
+    register_dashboard(app, db_path)
 
     return app

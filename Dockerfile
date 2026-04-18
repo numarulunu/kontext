@@ -21,6 +21,7 @@ RUN pip install -q -r requirements.txt
 COPY cloud/ ./cloud/
 COPY db.py dream.py digest.py sync.py migrate.py ./
 COPY templates/ ./templates/
+COPY static_dashboard/ ./static_dashboard/
 
 RUN mkdir -p /app/data
 
