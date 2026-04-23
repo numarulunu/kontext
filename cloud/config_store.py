@@ -39,6 +39,9 @@ def save(cfg: dict) -> None:
         tmp.replace(p)
 
 
+DEFAULT_MODEL = "claude-haiku-4-5"
+
+
 def get_anthropic_api_key() -> str | None:
     """Read key: config file wins, env var as fallback. Returns None if neither set."""
     cfg = load()
@@ -49,12 +52,40 @@ def get_anthropic_api_key() -> str | None:
     return env_key or None
 
 
-def set_anthropic_api_key(key: str | None) -> None:
+def get_anthropic_base_url() -> str | None:
+    """Custom base URL (e.g. OmniRoute). Empty/None → SDK default (api.anthropic.com)."""
     cfg = load()
-    if key and key.strip():
-        cfg["anthropic_api_key"] = key.strip()
+    url = (cfg.get("anthropic_base_url") or "").strip()
+    if url:
+        return url
+    env_url = (os.environ.get("ANTHROPIC_BASE_URL") or "").strip()
+    return env_url or None
+
+
+def get_anthropic_model() -> str:
+    cfg = load()
+    model = (cfg.get("anthropic_model") or "").strip()
+    return model or DEFAULT_MODEL
+
+
+def set_anthropic_api_key(key: str | None) -> None:
+    _set_scalar("anthropic_api_key", key)
+
+
+def set_anthropic_base_url(url: str | None) -> None:
+    _set_scalar("anthropic_base_url", url)
+
+
+def set_anthropic_model(model: str | None) -> None:
+    _set_scalar("anthropic_model", model)
+
+
+def _set_scalar(field: str, value: str | None) -> None:
+    cfg = load()
+    if value and str(value).strip():
+        cfg[field] = str(value).strip()
     else:
-        cfg.pop("anthropic_api_key", None)
+        cfg.pop(field, None)
     save(cfg)
 
 

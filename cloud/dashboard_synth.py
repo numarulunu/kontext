@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
 
-HAIKU_MODEL = "claude-haiku-4-5"
+DEFAULT_MODEL = "claude-haiku-4-5"  # overridden by dashboard Settings / config_store
 MAX_PARALLEL = 6
 MAX_FACTS_PER_ENTRY = 40
 MAX_FACT_BLOCK_CHARS = 5000
@@ -109,10 +109,10 @@ def _build_user_message(file: str, type_: str, facts: list[str]) -> str:
     return f"File: {file}\nType: {type_}\n\nFacts:\n{block}"
 
 
-def _synthesize_one(client, file: str, type_: str, facts: list[str]) -> dict[str, Any]:
+def _synthesize_one(client, model: str, file: str, type_: str, facts: list[str]) -> dict[str, Any]:
     user_msg = _build_user_message(file, type_, facts)
     resp = client.messages.parse(
-        model=HAIKU_MODEL,
+        model=model,
         max_tokens=400,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_msg}],
@@ -150,9 +150,15 @@ def synthesize_entries(
     "N facts captured" / first-two-facts body so the dashboard still
     renders.
     """
-    # Prefer the key from the dashboard Settings page; fall back to env var.
-    from cloud.config_store import get_anthropic_api_key
+    # Prefer values from the dashboard Settings page; fall back to env.
+    from cloud.config_store import (
+        get_anthropic_api_key,
+        get_anthropic_base_url,
+        get_anthropic_model,
+    )
     api_key = get_anthropic_api_key()
+    base_url = get_anthropic_base_url()
+    model = get_anthropic_model()
     results: dict[str, dict[str, str]] = {}
     need_synth: list[tuple[str, str, list[str], str]] = []
 
@@ -182,12 +188,15 @@ def synthesize_entries(
 
         import anthropic  # imported lazily so snapshot never fails on a missing dep
 
-        client = anthropic.Anthropic(api_key=api_key)
+        client_kwargs: dict[str, Any] = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        client = anthropic.Anthropic(**client_kwargs)
         fresh: list[tuple[str, str, dict[str, Any]]] = []
 
         def work(file: str, type_: str, facts: list[str], h: str):
             try:
-                out = _synthesize_one(client, file, type_, facts)
+                out = _synthesize_one(client, model, file, type_, facts)
                 return (file, h, out, None)
             except anthropic.APIError as exc:
                 log.warning("dashboard_synth API error for %s: %s", file, exc)
@@ -218,7 +227,7 @@ def synthesize_entries(
                     h,
                     out["why"],
                     out["body"],
-                    HAIKU_MODEL,
+                    model,
                     out["tokens_in"],
                     out["tokens_out"],
                 )

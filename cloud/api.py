@@ -281,13 +281,19 @@ def build_app(db) -> FastAPI:
     # unauthenticated requests never reach the upstream.
     from cloud import config_store
 
-    @app.get("/api/config", include_in_schema=False)
-    def get_dashboard_config():
+    def _config_snapshot() -> dict:
         key = config_store.get_anthropic_api_key()
         return {
             "anthropic_api_key_set": bool(key),
             "anthropic_api_key_masked": config_store.mask_key(key),
+            "anthropic_base_url": config_store.get_anthropic_base_url() or "",
+            "anthropic_model": config_store.get_anthropic_model(),
+            "anthropic_model_default": config_store.DEFAULT_MODEL,
         }
+
+    @app.get("/api/config", include_in_schema=False)
+    def get_dashboard_config():
+        return _config_snapshot()
 
     @app.post("/api/config", include_in_schema=False)
     def set_dashboard_config(body: dict):
@@ -295,23 +301,24 @@ def build_app(db) -> FastAPI:
         if "anthropic_api_key" in body:
             config_store.set_anthropic_api_key(body.get("anthropic_api_key"))
             changed = True
-            # Drop snapshot cache so next /data.js reflects the new key
-            # (cached per-entry synthesis stays — same content hash means
-            # same synthesis, which is what we want; only new/changed
-            # entries actually call Haiku).
+        if "anthropic_base_url" in body:
+            config_store.set_anthropic_base_url(body.get("anthropic_base_url"))
+            changed = True
+        if "anthropic_model" in body:
+            config_store.set_anthropic_model(body.get("anthropic_model"))
+            changed = True
+        if changed:
+            # Drop snapshot cache so next /data.js reflects the new settings.
+            # Per-entry synthesis cache stays — same content hash still means
+            # same synthesis; only entries that haven't been synthesized with
+            # this key/model combo will actually call the API.
             try:
                 from cloud.dashboard_snapshot import _SNAPSHOT_CACHE
                 _SNAPSHOT_CACHE["payload"] = None
                 _SNAPSHOT_CACHE["built_at"] = 0.0
             except Exception:  # noqa: BLE001
                 pass
-        key = config_store.get_anthropic_api_key()
-        return {
-            "status": "ok",
-            "changed": changed,
-            "anthropic_api_key_set": bool(key),
-            "anthropic_api_key_masked": config_store.mask_key(key),
-        }
+        return {"status": "ok", "changed": changed, **_config_snapshot()}
 
     from cloud.dashboard import register_dashboard
     register_dashboard(app, db_path)
