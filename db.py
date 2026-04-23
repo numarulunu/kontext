@@ -465,6 +465,83 @@ def _migration_12_canonical_objects(conn):
     """)
 
 
+def _migration_19_memory_type(conn):
+    """Partition entries into episodic / semantic / procedural.
+
+    Enables partition-aware retrieval: callback queries filter by
+    memory_type='episodic', stable-attribute queries filter by
+    memory_type='semantic', habit queries by 'procedural'. Schema is
+    permissive (DEFAULT 'semantic', no CHECK constraint to keep ALTER
+    cheap on large tables); app code enforces the enum at write time.
+
+    Backfill heuristic — zero LLM, single SQL pass:
+      - `episodic` = entries whose source contains a dated AI tag
+        ([Claude 2026-04], [ChatGPT 2025-08], etc.) or whose fact
+        starts with a bracketed date.
+      - `procedural` = entries describing rules/preferences/workflows
+        ("always X", "never X", "prefer X", "How to X", "Protocol:").
+      - `semantic` = everything else (DEFAULT, no UPDATE needed).
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(entries)").fetchall()}
+    if "memory_type" in cols:
+        return
+    conn.execute("ALTER TABLE entries ADD COLUMN memory_type TEXT DEFAULT 'semantic'")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_entries_memory_type ON entries(memory_type)")
+    conn.execute("""
+        UPDATE entries SET memory_type = 'episodic'
+        WHERE memory_type = 'semantic'
+          AND (source LIKE '%Claude 20%'
+               OR source LIKE '%Codex 20%'
+               OR source LIKE '%Mastermind 20%'
+               OR source LIKE '%ChatGPT 20%'
+               OR source LIKE '%Gemini 20%'
+               OR source LIKE '%WhatsApp 20%'
+               OR fact LIKE '[20__-__%')
+    """)
+    conn.execute("""
+        UPDATE entries SET memory_type = 'procedural'
+        WHERE memory_type = 'semantic'
+          AND (fact LIKE 'always %' OR fact LIKE 'Always %'
+               OR fact LIKE 'never %' OR fact LIKE 'Never %'
+               OR fact LIKE 'prefer%' OR fact LIKE 'Prefer%'
+               OR fact LIKE 'When %' OR fact LIKE 'when %'
+               OR fact LIKE 'How to %' OR fact LIKE 'how to %'
+               OR fact LIKE 'Protocol:%' OR fact LIKE 'Rule:%'
+               OR fact LIKE '% workflow%' OR fact LIKE '% rule:%')
+    """)
+
+
+def _migration_20_relation_typed_edges(conn):
+    """Typed edges on `relations`: supersedes / contradicts / caused_by /
+    instance_of / temporal_before / co_occurs.
+
+    Before: free-text `relation` column (usually 'co_occurs_with'). After:
+    add `rel_type` as a closed vocabulary enforced by app code. Dream's
+    resolve phase can write supersedes edges directly rather than only
+    tombstoning losers — giving the graph a notion of "this fact replaced
+    that one" rather than just "these co-occur."
+
+    Backfill: map existing `relation` strings to the enum via LIKE.
+    Anything ambiguous stays 'co_occurs'.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(relations)").fetchall()}
+    if "rel_type" in cols:
+        return
+    conn.execute("ALTER TABLE relations ADD COLUMN rel_type TEXT DEFAULT 'co_occurs'")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_relations_rel_type ON relations(rel_type)")
+    conn.execute("""
+        UPDATE relations SET rel_type = CASE
+            WHEN relation LIKE '%supersede%' THEN 'supersedes'
+            WHEN relation LIKE '%contradict%' THEN 'contradicts'
+            WHEN relation LIKE '%caused%' OR relation LIKE '%causes%' THEN 'caused_by'
+            WHEN relation LIKE '%instance%' OR relation LIKE '%is_a%' THEN 'instance_of'
+            WHEN relation LIKE '%temporal%' OR relation LIKE '%before%' THEN 'temporal_before'
+            ELSE 'co_occurs'
+        END
+        WHERE rel_type = 'co_occurs'
+    """)
+
+
 MIGRATIONS = [
     (1, _migration_1_session_summary_cols),
     (2, _migration_2_dedup_and_unique_indexes),
@@ -483,6 +560,8 @@ MIGRATIONS = [
     (15, _migration_15_retrieval_queries),
     (17, _migration_17_sessions_files_loaded),
     (18, _migration_18_retrieval_evals),
+    (19, _migration_19_memory_type),
+    (20, _migration_20_relation_typed_edges),
 ]
 LATEST_SCHEMA_VERSION = max(v for v, _ in MIGRATIONS)
 

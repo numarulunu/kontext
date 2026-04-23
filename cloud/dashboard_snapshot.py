@@ -281,10 +281,31 @@ def _build_snapshot_uncached(db_path: str) -> dict[str, Any]:
         files_active_30d = sum(1 for e in entries if e["decay"] < 0.6)
         relation_count = len(rel_rows)
 
-        oldest_created = conn.execute(
-            "SELECT MIN(created_at) AS t FROM entries"
-        ).fetchone()["t"]
-        age_days = max(1, (now_ms - _parse_ts_ms(oldest_created, now_ms)) // day_ms)
+        # Honest `known_since` — first load-bearing fact, not first stub.
+        # A fact is "load-bearing" when it's been retrieved into Claude's
+        # context multiple times AND graded as useful AND still active.
+        # This makes the dashboard's "known you for X days" a falsifiable
+        # claim derived from actual use, not a count of rows-since-import.
+        #
+        # Three-tier fallback so the value never disappears on a fresh DB:
+        #   1. Load-bearing fact (grade >= 7, active, used >= 3x)
+        #   2. Any high-grade active fact (grade >= 7)
+        #   3. Oldest entry in the table (equivalent to the old behavior)
+        known_since = conn.execute("""
+            SELECT MIN(created_at) AS t FROM entries
+            WHERE grade >= 7 AND tier = 'active' AND access_count >= 3
+        """).fetchone()["t"]
+        if not known_since:
+            known_since = conn.execute("""
+                SELECT MIN(created_at) AS t FROM entries
+                WHERE grade >= 7 AND tier = 'active'
+            """).fetchone()["t"]
+        if not known_since:
+            known_since = conn.execute(
+                "SELECT MIN(created_at) AS t FROM entries"
+            ).fetchone()["t"]
+        known_since_ms = _parse_ts_ms(known_since, now_ms)
+        age_days = max(1, (now_ms - known_since_ms) // day_ms)
 
         breadth = min(100, int(total_files / 40 * 100))
         depth = min(100, int(total_entries / 200 * 100))
@@ -382,6 +403,9 @@ def _build_snapshot_uncached(db_path: str) -> dict[str, Any]:
                 "entriesTouched": int(entries_touched_24h),
                 "lastCaptureAgo": max(0, now_ms - last_capture_ms),
             },
+            # Honest "known you for X days" anchor — see known_since query above.
+            "knownSinceMs": known_since_ms,
+            "ageDays": int(age_days),
         }
     finally:
         conn.close()
