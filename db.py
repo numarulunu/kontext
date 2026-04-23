@@ -1120,17 +1120,27 @@ class KontextDB:
     def add_relation(self, entity_a: str, relation: str, entity_b: str,
                      confidence: float = 1.0, source: str = "",
                      emit_cloud: bool = True,
-                     created_at: str | None = None):
-        """Add a relation. Race-safe via UNIQUE(entity_a, relation, entity_b) + INSERT OR IGNORE."""
+                     created_at: str | None = None,
+                     rel_type: str = "co_occurs"):
+        """Add a relation. Race-safe via UNIQUE(entity_a, relation, entity_b) + INSERT OR IGNORE.
+
+        `rel_type` is the closed-vocabulary enum added in migration 20:
+        supersedes / contradicts / caused_by / instance_of / temporal_before
+        / co_occurs (default). Enforced in Python (no SQLite CHECK).
+        """
+        _ALLOWED_REL_TYPES = {"supersedes", "contradicts", "caused_by",
+                               "instance_of", "temporal_before", "co_occurs"}
+        if rel_type not in _ALLOWED_REL_TYPES:
+            rel_type = "co_occurs"
         if created_at:
             cursor = self._execute(
-                "INSERT OR IGNORE INTO relations (entity_a, relation, entity_b, confidence, source, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (entity_a, relation, entity_b, confidence, source, created_at)
+                "INSERT OR IGNORE INTO relations (entity_a, relation, entity_b, confidence, source, created_at, rel_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (entity_a, relation, entity_b, confidence, source, created_at, rel_type)
             )
         else:
             cursor = self._execute(
-                "INSERT OR IGNORE INTO relations (entity_a, relation, entity_b, confidence, source) VALUES (?, ?, ?, ?, ?)",
-                (entity_a, relation, entity_b, confidence, source)
+                "INSERT OR IGNORE INTO relations (entity_a, relation, entity_b, confidence, source, rel_type) VALUES (?, ?, ?, ?, ?, ?)",
+                (entity_a, relation, entity_b, confidence, source, rel_type)
             )
         row = self.conn.execute(
             "SELECT id FROM relations WHERE entity_a = ? AND relation = ? AND entity_b = ?",

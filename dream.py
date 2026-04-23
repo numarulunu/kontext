@@ -300,6 +300,14 @@ def phase_resolve(db: KontextDB, dry_run: bool = False) -> dict:
             if not dry_run:
                 db.resolve_conflict(c["id"], resolution)
                 db.update_entry(loser["id"], tier="historical")
+                db.add_relation(
+                    entity_a=(winner.get("fact") or "")[:80],
+                    relation="supersedes",
+                    entity_b=(loser.get("fact") or "")[:80],
+                    confidence=1.0,
+                    source=f"dream.resolve:conflict-{c['id']}",
+                    rel_type="supersedes",
+                )
             stats["auto_resolved"] += 1
             continue
 
@@ -314,6 +322,14 @@ def phase_resolve(db: KontextDB, dry_run: bool = False) -> dict:
             if not dry_run:
                 db.resolve_conflict(c["id"], resolution)
                 db.update_entry(loser["id"], tier="historical")
+                db.add_relation(
+                    entity_a=(winner.get("fact") or "")[:80],
+                    relation="supersedes",
+                    entity_b=(loser.get("fact") or "")[:80],
+                    confidence=1.0,
+                    source=f"dream.resolve:conflict-{c['id']}",
+                    rel_type="supersedes",
+                )
             stats["auto_resolved"] += 1
             continue
 
