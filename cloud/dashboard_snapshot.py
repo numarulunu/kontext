@@ -96,7 +96,13 @@ def _build_snapshot_uncached(db_path: str) -> dict[str, Any]:
             """
         ).fetchall()
 
-        # Cover entries that exist without a file_meta row.
+        # Cover entries that exist without a file_meta row AND auto-create
+        # a stub file_meta entry so the next snapshot JOIN picks them up
+        # naturally. Prevents "orphan" files from rendering with empty
+        # description forever — kontext_write doesn't currently insert
+        # file_meta for new files, and we don't want to hold that contract
+        # open. Inferred type from filename prefix; description falls back
+        # to the first fact (first 70 chars).
         orphan_rows = conn.execute(
             """
             SELECT e.file AS file,
@@ -114,6 +120,29 @@ def _build_snapshot_uncached(db_path: str) -> dict[str, Any]:
             GROUP BY e.file
             """
         ).fetchall()
+
+        def _infer_type(fname: str) -> str:
+            for prefix, t in [("user_", "user"), ("project_", "project"),
+                              ("feedback_", "feedback")]:
+                if fname.startswith(prefix):
+                    return t
+            return "user"
+
+        for r in orphan_rows:
+            first = conn.execute(
+                "SELECT fact FROM entries WHERE file=? ORDER BY created_at ASC LIMIT 1",
+                (r["file"],),
+            ).fetchone()
+            desc = ""
+            if first and first["fact"]:
+                desc = first["fact"].strip().split("\n")[0][:70]
+            conn.execute(
+                "INSERT OR IGNORE INTO file_meta (filename, file_type, description) VALUES (?, ?, ?)",
+                (r["file"], _infer_type(r["file"]), desc),
+            )
+        if orphan_rows:
+            conn.commit()
+
         all_rows = list(file_rows) + list(orphan_rows)
 
         # Derive file-to-file relations from the entities table. `relations`
