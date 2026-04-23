@@ -201,7 +201,7 @@ def search(query: str, entries: list[dict], top_k: int = 6) -> list[dict]:
     meta_by_filename = {e["filename"]: e for e in entries}
 
     try:
-        from retrieval import rrf_merge, expand
+        from retrieval import rrf_merge, rerank, expand
         db = _get_db()
         expanded = expand(query)
         fts_rows = db.search_entries(expanded["literal"], limit=50)
@@ -211,10 +211,10 @@ def search(query: str, entries: list[dict], top_k: int = 6) -> list[dict]:
             if hasattr(vec, "tolist"):
                 vec = vec.tolist()
             sem_rows = db.semantic_search(list(vec), limit=50)
-            merged = rrf_merge(fts_rows, sem_rows)
+            merged = rerank(rrf_merge(fts_rows, sem_rows))
         except Exception as e:
             _logger.warning(f"SEMANTIC FALLBACK in search: {type(e).__name__}: {e}")
-            merged = fts_rows
+            merged = rerank(fts_rows)
     except Exception as e:
         _logger.warning(f"DB FALLBACK in search: {type(e).__name__}: {e}")
         merged = []
@@ -233,13 +233,16 @@ def search(query: str, entries: list[dict], top_k: int = 6) -> list[dict]:
             if not meta:
                 # DB has entries for a file no longer in the directory scan.
                 continue
-            # Top-3 grades. Cap normalization at 30 (3 grade-10 facts).
-            top3_sum = sum(sorted(grades)[-3:])
+            # Max grade, normalized to 0..1. Replaces the old sum-of-top-3
+            # rollup which surfaced files with 3 mediocre facts above files
+            # with 1 sharp one — inverting the ranking intent of `grade`.
+            # See mastermind run 2026-04-24 + SMAC finding #8.
+            best_grade = max(grades) if grades else 0.0
             results.append({
                 "filename": meta["filename"],
                 "title": meta["title"],
                 "path": meta["path"],
-                "score": min(top3_sum / 30.0, 1.0),
+                "score": min(best_grade / 10.0, 1.0),
                 "description": meta["description"],
             })
         if results:
@@ -764,7 +767,7 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                     # HyDE-style expansion bridges vocabulary gaps on the
                     # semantic leg; the FTS5 leg keeps the literal query so
                     # expansion tokens don't dilute term-match precision.
-                    from retrieval import rrf_merge, expand
+                    from retrieval import rrf_merge, rerank, expand
                     expanded = expand(search_text)
                     _rq_expanded = expanded["intent"]
                     retriever_limit = max(top_k * 3, 20)
@@ -789,11 +792,11 @@ def handle_request(request: dict, memory_dir: Path, entries: list[dict]) -> dict
                         )
                         if args.get("tier"):
                             sem_results = [r for r in sem_results if r.get("tier") == args["tier"]]
-                        qresults = rrf_merge(fts_results, sem_results)[:top_k]
+                        qresults = rerank(rrf_merge(fts_results, sem_results))[:top_k]
                     except Exception as e:
                         _logger.warning(f"SEMANTIC FALLBACK: {type(e).__name__}: {e}")
                         fallback_note = " (semantic unavailable - using keyword search)"
-                        qresults = fts_results[:top_k]
+                        qresults = rerank(fts_results)[:top_k]
                 elif search_text:
                     # Forward file/tier/min_grade filters to search_entries so they
                     # aren't silently dropped when 'search' is supplied.
