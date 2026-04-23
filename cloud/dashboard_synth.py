@@ -150,7 +150,9 @@ def synthesize_entries(
     "N facts captured" / first-two-facts body so the dashboard still
     renders.
     """
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    # Prefer the key from the dashboard Settings page; fall back to env var.
+    from cloud.config_store import get_anthropic_api_key
+    api_key = get_anthropic_api_key()
     results: dict[str, dict[str, str]] = {}
     need_synth: list[tuple[str, str, list[str], str]] = []
 

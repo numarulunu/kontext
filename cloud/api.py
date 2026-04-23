@@ -276,6 +276,43 @@ def build_app(db) -> FastAPI:
                 req_db.advance_sync_cursor(workspace_id, device_id, lane, items[-1]["op_id"])
         return {"items": items, "count": len(items)}
 
+    # Dashboard settings endpoints (Anthropic API key, etc.).
+    # Site sits behind Pangolin SSO, so no in-app auth is enforced here —
+    # unauthenticated requests never reach the upstream.
+    from cloud import config_store
+
+    @app.get("/api/config", include_in_schema=False)
+    def get_dashboard_config():
+        key = config_store.get_anthropic_api_key()
+        return {
+            "anthropic_api_key_set": bool(key),
+            "anthropic_api_key_masked": config_store.mask_key(key),
+        }
+
+    @app.post("/api/config", include_in_schema=False)
+    def set_dashboard_config(body: dict):
+        changed = False
+        if "anthropic_api_key" in body:
+            config_store.set_anthropic_api_key(body.get("anthropic_api_key"))
+            changed = True
+            # Drop snapshot cache so next /data.js reflects the new key
+            # (cached per-entry synthesis stays — same content hash means
+            # same synthesis, which is what we want; only new/changed
+            # entries actually call Haiku).
+            try:
+                from cloud.dashboard_snapshot import _SNAPSHOT_CACHE
+                _SNAPSHOT_CACHE["payload"] = None
+                _SNAPSHOT_CACHE["built_at"] = 0.0
+            except Exception:  # noqa: BLE001
+                pass
+        key = config_store.get_anthropic_api_key()
+        return {
+            "status": "ok",
+            "changed": changed,
+            "anthropic_api_key_set": bool(key),
+            "anthropic_api_key_masked": config_store.mask_key(key),
+        }
+
     from cloud.dashboard import register_dashboard
     register_dashboard(app, db_path)
 

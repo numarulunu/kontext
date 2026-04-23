@@ -20,7 +20,7 @@ function App() {
       let r = localStorage.getItem('kontext.route') || 'overview';
       // Legacy routes that were removed
       if (r === 'doc' || r === 'top') r = 'overview';
-      return ['overview','entries','relations','decay'].includes(r) ? r : 'overview';
+      return ['overview','entries','relations','decay','settings'].includes(r) ? r : 'overview';
     } catch { return 'overview'; }
   });
   const [routeCtx, setRouteCtx] = useState(null);
@@ -70,10 +70,10 @@ function App() {
   useKey(['mod+k'], (e) => { e.preventDefault(); setCmdkOpen(o => !o); }, []);
   useKey(['escape'], () => { setCmdkOpen(false); setGotoLeader(false); }, []);
   useKey(['g'], () => setGotoLeader(true), []);
-  useKey(['o','e','r','c'], (e) => {
+  useKey(['o','e','r','c','s'], (e) => {
     if (!gotoLeader) return;
     setGotoLeader(false);
-    const map = { o: 'overview', e: 'entries', r: 'relations', c: 'decay' };
+    const map = { o: 'overview', e: 'entries', r: 'relations', c: 'decay', s: 'settings' };
     if (map[e.key]) { setRoute(map[e.key]); setRouteCtx(null); e.preventDefault(); }
   }, [gotoLeader]);
 
@@ -89,6 +89,7 @@ function App() {
     route === 'entries'   ? <Entries initialId={routeCtx} /> :
     route === 'relations' ? <Relations focusId={routeCtx} /> :
     route === 'decay'     ? <Decay /> :
+    route === 'settings'  ? <Settings /> :
                             <Overview />;
 
   return (
@@ -105,6 +106,7 @@ function App() {
             { k: 'entries',   l: 'Entries',    h: 'GE' },
             { k: 'relations', l: 'Relations',  h: 'GR' },
             { k: 'decay',     l: 'Cleanup',    h: 'GC' },
+            { k: 'settings',  l: 'Settings',   h: 'GS' },
           ].map(t => (
             <button key={t.k} className="tab" aria-current={route === t.k}
               onClick={() => { setRoute(t.k); setRouteCtx(null); }}>
@@ -129,7 +131,7 @@ function App() {
         {Page}
         {gotoLeader && (
           <div style={{ position: 'fixed', bottom: 40, left: '50%', transform: 'translateX(-50%)', zIndex: 40, background: 'var(--surface)', border: '1px solid var(--hair-hi)', padding: '8px 14px', fontFamily: 'var(--f-mono)', fontSize: 12, color: 'var(--dim)' }}>
-            g · <span style={{ color: 'var(--hi)' }}>o</span>verview · <span style={{ color: 'var(--hi)' }}>e</span>ntries · <span style={{ color: 'var(--hi)' }}>r</span>elations · <span style={{ color: 'var(--hi)' }}>c</span>leanup
+            g · <span style={{ color: 'var(--hi)' }}>o</span>verview · <span style={{ color: 'var(--hi)' }}>e</span>ntries · <span style={{ color: 'var(--hi)' }}>r</span>elations · <span style={{ color: 'var(--hi)' }}>c</span>leanup · <span style={{ color: 'var(--hi)' }}>s</span>ettings
           </div>
         )}
       </div>
@@ -162,6 +164,7 @@ function CmdK({ onClose, onNav }) {
     { kind: 'nav', label: 'Go to Entries',   hint: 'G E', act: () => onNav('entries') },
     { kind: 'nav', label: 'Go to Relations', hint: 'G R', act: () => onNav('relations') },
     { kind: 'nav', label: 'Go to Cleanup', hint: 'G C', act: () => onNav('decay') },
+    { kind: 'nav', label: 'Go to Settings', hint: 'G S', act: () => onNav('settings') },
     { kind: 'act', label: 'Toggle bulk tier review', hint: 'B',  act: () => onNav('entries') },
     { kind: 'act', label: 'Export library (JSON)', hint: '',    act: onClose },
     { kind: 'act', label: 'Run decay cron now',    hint: '',    act: onClose },
