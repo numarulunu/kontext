@@ -203,6 +203,160 @@ def phase_dedup(db: KontextDB, dry_run: bool = False) -> dict:
     return stats
 
 
+def phase_dedup_cross_file(db: KontextDB, dry_run: bool = False,
+                             cosine_threshold: float = 0.92) -> dict:
+    """Merge near-duplicate entries that span multiple files.
+
+    Intra-file dedup catches syntactic duplicates with SequenceMatcher.
+    This phase catches the cross-file case that surfaced in the R1
+    kill-check (mastermind 2026-04-24): the same real-world event written
+    into multiple contextually-relevant files by kontext_write
+    (e.g. "earning $200-220/day" stored in project_goals + user_identity
+    + user_peer_dynamic). Embedding cosine > 0.92 clusters these even
+    when phrasing drifts.
+
+    For each cross-file cluster, the WINNER is picked by:
+      1. access_count (highest — most retrieval signal)
+      2. grade (tiebreak — most load-bearing)
+      3. updated_at (tiebreak — freshest)
+
+    Losers get tier='historical' (not deleted — history is preserved) +
+    a `supersedes` relation edge from winner.fact to loser.fact. This
+    keeps the graph auditable ("what did we collapse and why") and lets
+    phase_resolve skip them on future runs.
+
+    Uses the `embedding` BLOB column (float32 × 384 from
+    all-MiniLM-L6-v2) already populated by the MCP server's index
+    pass — no model reload here. Entries without embeddings are
+    skipped.
+    """
+    import struct
+
+    stats = {
+        "entries_scanned": 0, "clusters_found": 0,
+        "cross_file_clusters": 0, "demoted": 0, "supersedes_written": 0,
+    }
+
+    rows = list(db.conn.execute(
+        "SELECT id, file, fact, grade, access_count, updated_at, embedding "
+        "FROM entries WHERE tier = 'active' AND embedding IS NOT NULL"
+    ).fetchall())
+    stats["entries_scanned"] = len(rows)
+    if len(rows) < 2:
+        return stats
+
+    try:
+        import numpy as np
+    except ImportError:
+        _log.warning("phase_dedup_cross_file: numpy not available, skipping")
+        return stats
+
+    vecs = []
+    meta = []
+    for r in rows:
+        b = r["embedding"]
+        if not b or len(b) < 4:
+            continue
+        n = len(b) // 4
+        try:
+            v = np.array(struct.unpack(f"{n}f", b), dtype=np.float32)
+        except struct.error:
+            continue
+        vecs.append(v)
+        meta.append({
+            "id": r["id"], "file": r["file"], "fact": r["fact"] or "",
+            "grade": float(r["grade"] or 0),
+            "access_count": int(r["access_count"] or 0),
+            "updated_at": r["updated_at"] or "",
+        })
+
+    if len(vecs) < 2:
+        return stats
+
+    X = np.stack(vecs, axis=0)
+    norms = np.linalg.norm(X, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    X = X / norms
+    S = X @ X.T
+    np.fill_diagonal(S, 0)
+
+    parent = list(range(len(X)))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        a, b = find(a), find(b)
+        if a != b:
+            parent[a] = b
+
+    iu, ju = np.where(np.triu(S, 1) > cosine_threshold)
+    for i, j in zip(iu, ju):
+        union(int(i), int(j))
+
+    from collections import defaultdict
+    clusters: dict[int, list[int]] = defaultdict(list)
+    for idx in range(len(X)):
+        clusters[find(idx)].append(idx)
+    stats["clusters_found"] = sum(1 for cl in clusters.values() if len(cl) >= 2)
+
+    for cl in clusters.values():
+        if len(cl) < 2:
+            continue
+        files_in_cluster = {meta[i]["file"] for i in cl}
+        if len(files_in_cluster) < 2:
+            continue  # intra-file — already handled
+        stats["cross_file_clusters"] += 1
+
+        # Rank: access_count DESC, grade DESC, updated_at DESC.
+        members = sorted(
+            (meta[i] for i in cl),
+            key=lambda m: (-m["access_count"], -m["grade"], m["updated_at"] and -ord(m["updated_at"][0] if m["updated_at"] else "0")),
+        )
+        # More reliable sort: compute a composite key we can actually DESC-sort on.
+        members = sorted(
+            (meta[i] for i in cl),
+            key=lambda m: (m["access_count"], m["grade"], m["updated_at"]),
+            reverse=True,
+        )
+        winner, losers = members[0], members[1:]
+
+        _log.info(
+            "CROSS_DEDUP: cluster_size=%d files=%d keep id=%d file=%s ac=%d grade=%.0f",
+            len(cl), len(files_in_cluster), winner["id"], winner["file"],
+            winner["access_count"], winner["grade"],
+        )
+        _log.info("  KEEP: %s", (winner["fact"] or "")[:90])
+
+        for loser in losers:
+            _log.info(
+                "  DROP: id=%d file=%s ac=%d grade=%.0f — %s",
+                loser["id"], loser["file"], loser["access_count"],
+                loser["grade"], (loser["fact"] or "")[:80],
+            )
+            if dry_run:
+                continue
+            db.update_entry(loser["id"], tier="historical")
+            stats["demoted"] += 1
+            try:
+                db.add_relation(
+                    entity_a=(winner["fact"] or "")[:80],
+                    relation="supersedes",
+                    entity_b=(loser["fact"] or "")[:80],
+                    confidence=1.0,
+                    source=f"dream.dedup_cross_file:id-{winner['id']}",
+                    rel_type="supersedes",
+                )
+                stats["supersedes_written"] += 1
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("supersedes relation write failed: %s", exc)
+
+    return stats
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: Normalize
 # ---------------------------------------------------------------------------
@@ -831,6 +985,7 @@ def phase_kill_conditions(db: KontextDB, dry_run: bool = False) -> dict:
 
 PHASES = {
     "dedup": phase_dedup,
+    "dedup_cross_file": phase_dedup_cross_file,
     "normalize": phase_normalize,
     "resolve": phase_resolve,
     "compress": phase_compress,
