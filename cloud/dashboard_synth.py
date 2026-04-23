@@ -35,12 +35,17 @@ Each entry is a markdown file holding facts that an AI assistant has learned abo
 Write in second person ("you"). Do not quote timestamps, counts, or file names. No preamble, no hedging, no quotation marks around the output fields.
 
 - `why`: one sentence, <=120 characters, stating what this entry is used for in the owner's AI sessions. Example: "calibrates tone and response length across every session."
-- `body`: one or two sentences, <=280 characters total, synthesizing the most load-bearing, deduped facts. Strip boilerplate. Keep only the details that would change how an AI responds to this person."""
+- `body`: one or two sentences, <=280 characters total, synthesizing the most load-bearing, deduped facts. Strip boilerplate. Keep only the details that would change how an AI responds to this person.
+
+Respond ONLY with a JSON object matching exactly this schema, no other text:
+{"why": "…", "body": "…"}"""
 
 
 class _Synth(BaseModel):
-    why: str = Field(max_length=200)
-    body: str = Field(max_length=400)
+    # Upstream truncation to display caps (120/280) happens at the call
+    # site. Schema is permissive — reject only the pathological case.
+    why: str = Field(max_length=2000)
+    body: str = Field(max_length=4000)
 
 
 def _content_hash(facts: list[str]) -> str:
@@ -109,16 +114,91 @@ def _build_user_message(file: str, type_: str, facts: list[str]) -> str:
     return f"File: {file}\nType: {type_}\n\nFacts:\n{block}"
 
 
-def _synthesize_one(client, model: str, file: str, type_: str, facts: list[str]) -> dict[str, Any]:
+def _extract_json(text: str) -> dict:
+    """Pull the first {...} JSON object from a model response.
+
+    Handles: pure JSON, JSON wrapped in ```json fences, JSON with prose
+    before or after. Raises ValueError if no parseable object is found.
+    """
+    stripped = text.strip()
+    # Try whole string first.
+    try:
+        return json.loads(stripped)
+    except Exception:
+        pass
+    # Strip common fence patterns.
+    if "```" in stripped:
+        import re
+        match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", stripped, re.DOTALL)
+        if match:
+            return json.loads(match.group(1))
+    # Fall back: find the first balanced {...} block.
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start >= 0 and end > start:
+        return json.loads(stripped[start : end + 1])
+    raise ValueError("no JSON object in response")
+
+
+def _synthesize_via_openai_compat(
+    base_url: str, api_key: str, model: str, file: str, type_: str, facts: list[str]
+) -> dict[str, Any]:
+    """Raw /chat/completions call. Proxies (OmniRoute, LiteLLM, OpenRouter)
+    universally speak OpenAI shape — it's the one endpoint that works across
+    every provider without translation surprises (e.g. OmniRoute's Anthropic
+    wire-format path injects a `system` role message that upstream Anthropic
+    rejects).
+    """
+    import urllib.request, urllib.error
+    body = json.dumps({
+        "model": model,
+        "max_tokens": 400,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": _build_user_message(file, type_, facts)},
+        ],
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        base_url.rstrip("/") + "/chat/completions",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "content-type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    text = payload.get("choices", [{}])[0].get("message", {}).get("content", "")
+    data = _extract_json(text)
+    parsed = _Synth(**data)
+    usage = payload.get("usage", {}) or {}
+    return {
+        "why": parsed.why[:120],
+        "body": parsed.body[:280],
+        "tokens_in": int(usage.get("prompt_tokens", 0) or 0),
+        "tokens_out": int(usage.get("completion_tokens", 0) or 0),
+    }
+
+
+def _synthesize_via_anthropic_sdk(
+    client, model: str, file: str, type_: str, facts: list[str]
+) -> dict[str, Any]:
+    """Direct api.anthropic.com path via the SDK. Uses messages.create()
+    (not parse()) so the prompt-level JSON schema is what enforces the
+    shape — simpler wire contract than tool-use round-trips.
+    """
     user_msg = _build_user_message(file, type_, facts)
-    resp = client.messages.parse(
+    resp = client.messages.create(
         model=model,
         max_tokens=400,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_msg}],
-        output_format=_Synth,
     )
-    parsed: _Synth = resp.parsed_output
+    text_blocks = [b.text for b in resp.content if getattr(b, "type", None) == "text"]
+    text = "\n".join(text_blocks).strip()
+    data = _extract_json(text)
+    parsed = _Synth(**data)
     tokens_in = int(getattr(resp.usage, "input_tokens", 0) or 0) + int(
         getattr(resp.usage, "cache_read_input_tokens", 0) or 0
     )
@@ -186,32 +266,24 @@ def synthesize_entries(
                 results[file] = _fallback(facts)
             return results
 
-        import anthropic  # imported lazily so snapshot never fails on a missing dep
+        # Pick call shape: proxy → OpenAI /chat/completions (universal);
+        # direct Anthropic → native SDK messages.create.
+        client = None
+        if not base_url:
+            import anthropic  # imported lazily so snapshot never fails on a missing dep
+            client = anthropic.Anthropic(api_key=api_key)
 
-        # Custom base URLs (OmniRoute, LiteLLM, any OpenAI/Anthropic proxy)
-        # expect `Authorization: Bearer <token>`. The Anthropic SDK's
-        # `api_key` kwarg generates `x-api-key` instead, which those
-        # proxies reject as "Missing API key". Using `auth_token` switches
-        # the SDK to Bearer auth.
-        client_kwargs: dict[str, Any] = {}
-        if base_url:
-            client_kwargs["base_url"] = base_url
-            client_kwargs["auth_token"] = api_key
-            client_kwargs["api_key"] = ""  # empty so SDK doesn't also fetch ANTHROPIC_API_KEY from env
-        else:
-            client_kwargs["api_key"] = api_key
-        client = anthropic.Anthropic(**client_kwargs)
         fresh: list[tuple[str, str, dict[str, Any]]] = []
 
         def work(file: str, type_: str, facts: list[str], h: str):
             try:
-                out = _synthesize_one(client, model, file, type_, facts)
+                if base_url:
+                    out = _synthesize_via_openai_compat(base_url, api_key, model, file, type_, facts)
+                else:
+                    out = _synthesize_via_anthropic_sdk(client, model, file, type_, facts)
                 return (file, h, out, None)
-            except anthropic.APIError as exc:
-                log.warning("dashboard_synth API error for %s: %s", file, exc)
-                return (file, h, None, exc)
             except Exception as exc:
-                log.exception("dashboard_synth unexpected error for %s", file)
+                log.warning("dashboard_synth error for %s: %s", file, exc)
                 return (file, h, None, exc)
 
         with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as ex:
