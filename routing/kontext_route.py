@@ -435,6 +435,19 @@ def route(message: str = "", cwd: str = "", reset: bool = False,
                 for kw in rule.get("keywords", []) or []:
                     if kw and len(kw) >= 3:
                         all_topic_kws.add(kw.lower().strip())
+            # Expand fuzzy-match universe with tokens pulled from memory
+            # filenames themselves. `user_luiza_dynamic.md` contributes
+            # ["user", "luiza", "dynamic"] — often the query names the
+            # concept directly ("what's up with luiza") even when it
+            # doesn't hit an explicit keyword rule. Free signal, zero ML.
+            try:
+                for p in memory_root.glob("*.md"):
+                    for tok in p.stem.replace("-", "_").split("_"):
+                        t = tok.lower().strip()
+                        if len(t) >= 3 and t not in {"user", "project", "feedback"}:
+                            all_topic_kws.add(t)
+            except Exception:
+                pass
             if _fuzzy_topic_match(message_lower, all_topic_kws):
                 fuzzy_files = cfg.get("fuzzy_fallback", []) or cfg.get("default_fallback", []) or []
                 for f in fuzzy_files:
@@ -487,6 +500,24 @@ def route(message: str = "", cwd: str = "", reset: bool = False,
             lf[f] = now
         state["loaded_files"] = lf
         _save_state_atomic(state_path, state)
+
+        # Append to auto-load event log consumed by
+        # tools/bump_access_from_routing_log.py to grow access_count
+        # signal. Without this, access_count only increments when Claude
+        # explicitly calls `kontext_query` — which is rare — so 87% of
+        # entries stay at 0 forever and the rerank() multiplier is a
+        # no-op for them. (See Mastermind 2026-04-24 report.)
+        try:
+            log_path = Path(__file__).resolve().parent / "_loaded_files.jsonl"
+            with log_path.open("a", encoding="utf-8") as _f:
+                _f.write(json.dumps({
+                    "ts": now,
+                    "files": sorted(loaded_basenames),
+                    "matched": matched,
+                    "msg_hash": _hash_message(message),
+                }) + "\n")
+        except Exception:
+            pass  # Never fail a route call over telemetry.
 
     elapsed_ms = int((time.time() - t_start) * 1000)
     result = {
