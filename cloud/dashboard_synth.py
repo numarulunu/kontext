@@ -188,9 +188,18 @@ def synthesize_entries(
 
         import anthropic  # imported lazily so snapshot never fails on a missing dep
 
-        client_kwargs: dict[str, Any] = {"api_key": api_key}
+        # Custom base URLs (OmniRoute, LiteLLM, any OpenAI/Anthropic proxy)
+        # expect `Authorization: Bearer <token>`. The Anthropic SDK's
+        # `api_key` kwarg generates `x-api-key` instead, which those
+        # proxies reject as "Missing API key". Using `auth_token` switches
+        # the SDK to Bearer auth.
+        client_kwargs: dict[str, Any] = {}
         if base_url:
             client_kwargs["base_url"] = base_url
+            client_kwargs["auth_token"] = api_key
+            client_kwargs["api_key"] = ""  # empty so SDK doesn't also fetch ANTHROPIC_API_KEY from env
+        else:
+            client_kwargs["api_key"] = api_key
         client = anthropic.Anthropic(**client_kwargs)
         fresh: list[tuple[str, str, dict[str, Any]]] = []
 
