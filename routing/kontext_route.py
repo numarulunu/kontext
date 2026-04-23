@@ -127,8 +127,20 @@ def _parse_yaml_fallback(text: str) -> dict:
             continue
 
         if stripped.startswith("- ") and current_list_key:
+            content = stripped[2:].strip()
+            # Bare-string list item (e.g. `  - user_core.md`) has no `:` —
+            # emit a string, not a {name: None} dict. This is what breaks
+            # `always_load`/`default_fallback`/`fuzzy_fallback` when the
+            # fallback parser is used (PyYAML missing).
+            if ":" not in content:
+                if content.startswith("[") and content.endswith("]"):
+                    result[current_list_key].append(parse_inline_list(content))
+                else:
+                    result[current_list_key].append(strip_quotes(content))
+                i += 1
+                continue
             item: dict = {}
-            first_key, _, first_val = stripped[2:].partition(":")
+            first_key, _, first_val = content.partition(":")
             first_key = first_key.strip()
             first_val = first_val.strip()
             if first_val.startswith("["):
@@ -602,4 +614,22 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except Exception as _exc:  # noqa: BLE001 — forensic log of any router crash
+        import traceback as _tb
+        try:
+            _LOG_PATH = Path(__file__).resolve().parent / "_kontext_route.log"
+            _line = {
+                "ts": int(time.time()),
+                "error": repr(_exc),
+                "argv": sys.argv[1:],
+                "tb_tail": _tb.format_exc().strip().splitlines()[-3:],
+            }
+            with _LOG_PATH.open("a", encoding="utf-8") as _f:
+                _f.write(json.dumps(_line) + "\n")
+        except Exception:
+            pass
+        raise

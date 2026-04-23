@@ -27,7 +27,13 @@
 set -eo pipefail
 cd /root/kontext-mcp
 export PYTHONPATH=/root/kontext-mcp
-exec python3 - <<'PY'
+
+# Watchdog sentinel — tail /root/.kontext/_sync.status to see health.
+SENTINEL=/root/.kontext/_sync.status
+trap 'echo "error:$(date -u +%FT%TZ):unexpected_exit" > "$SENTINEL"' ERR EXIT
+
+python3 - <<'PY'
+
 import sys, json, time
 from pathlib import Path
 sys.path.insert(0, '/root/kontext-mcp')
@@ -87,3 +93,7 @@ print(json.dumps({
     'md_files': len(list(outdir.glob('*.md'))),
 }))
 PY
+
+# Success sentinel — watchdog / dashboards can tail this file.
+echo "ok:$(date -u +%FT%TZ)" > /root/.kontext/_sync.status
+trap - ERR EXIT
