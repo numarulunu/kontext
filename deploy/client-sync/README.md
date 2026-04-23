@@ -61,6 +61,29 @@ tail -n3 /root/.kontext/_sync.log
 
 Each line is one JSON object: `{ts, elapsed_ms, pushed, pulled_history, pulled_canonical, md_files}`.
 
+## MCP memory-dir unification (one-time)
+
+If the host also runs the `kontext-mcp` MCP server, it uses its own
+`find_memory_dir()` auto-discovery that scans `~/.claude/projects/*/memory`.
+Without intervention, the MCP reads one copy of the memory and this sync
+writes a different one (e.g. `~/.kontext/memory`) — the two drift.
+
+Unify them with a symlink so both components see the same filesystem:
+
+```bash
+MCP_DIR=$(python3 -c "import sys; sys.path.insert(0,'/root/kontext-mcp'); from mcp_server import find_memory_dir; print(find_memory_dir())")
+mkdir -p /root/.kontext/memory
+# Preserve the existing embeddings cache (MCP will regenerate, but save it just in case):
+cp "$MCP_DIR/_embeddings_cache.json" /root/.kontext/_mcp_backup_$(date +%s).json 2>/dev/null || true
+# Replace the MCP dir with a symlink to the canonical export location:
+rm -rf "$MCP_DIR"
+ln -s /root/.kontext/memory "$MCP_DIR"
+```
+
+After this, every `_sync.sh` tick's `export_all(db, /root/.kontext/memory)` is
+visible to both the router and the MCP immediately; no MCP restart required
+to pick up new facts (it re-indexes per call anyway).
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
