@@ -313,19 +313,34 @@ def _build_snapshot_uncached(db_path: str) -> dict[str, Any]:
         longevity = min(100, int(age_days / 180 * 100))
         linkage = min(100, int(relation_count / max(total_files, 1) * 50))
 
+        # Read historical dimension snapshots if dream.phase_history_snapshot
+        # has been populating score_history. Fall back to today-repeated if
+        # the table is empty or missing (pre-migration-21 DBs).
+        history_rows: dict[str, dict] = {}
+        try:
+            for r in conn.execute(
+                "SELECT snapshot_date, score, breadth, depth, recency, "
+                "longevity, linkage, captures, prompts FROM score_history "
+                "WHERE snapshot_date > date('now', '-15 days')"
+            ).fetchall():
+                history_rows[r["snapshot_date"]] = dict(r)
+        except sqlite3.OperationalError:
+            pass  # table doesn't exist yet
+
         history = []
         for d_off in range(13, -1, -1):
             ts = now_ms - d_off * day_ms
             date_str = datetime.fromtimestamp(ts / 1000, timezone.utc).strftime("%Y-%m-%d")
+            snap = history_rows.get(date_str)
             history.append({
                 "t": ts,
-                "breadth": breadth,
-                "depth": depth,
-                "recency": recency,
-                "longevity": longevity,
-                "linkage": linkage,
-                "captures": int(tool_counts.get(date_str, 0)),
-                "prompts": int(prompt_counts.get(date_str, 0)),
+                "breadth": (snap["breadth"] if snap else breadth),
+                "depth":   (snap["depth"]   if snap else depth),
+                "recency": (snap["recency"] if snap else recency),
+                "longevity": (snap["longevity"] if snap else longevity),
+                "linkage": (snap["linkage"] if snap else linkage),
+                "captures": int((snap["captures"] if snap else 0) or tool_counts.get(date_str, 0)),
+                "prompts":  int((snap["prompts"]  if snap else 0) or prompt_counts.get(date_str, 0)),
             })
 
         weights = {"breadth": 0.18, "depth": 0.22, "recency": 0.25, "longevity": 0.15, "linkage": 0.20}

@@ -983,6 +983,94 @@ def phase_kill_conditions(db: KontextDB, dry_run: bool = False) -> dict:
 # Orchestrator
 # ---------------------------------------------------------------------------
 
+def phase_history_snapshot(db: KontextDB, dry_run: bool = False) -> dict:
+    """Write today's Kontext Score dimensions to score_history.
+
+    The dashboard's 14-day chart previously projected today's values
+    backward via Math.sin in the static mock. This phase populates a
+    real daily time-series so the chart reflects actual trajectory.
+
+    Upserts by `snapshot_date` so multiple dream runs in one day just
+    update the row rather than duplicate. Uses the same dimension
+    formulas as dashboard_snapshot.build_snapshot so readings are
+    comparable.
+    """
+    stats = {"date": None, "written": 0}
+    c = db.conn
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    stats["date"] = today
+
+    total_files = c.execute(
+        "SELECT COUNT(DISTINCT file) FROM entries WHERE tier='active'"
+    ).fetchone()[0] or 0
+    total_entries = c.execute(
+        "SELECT COUNT(*) FROM entries WHERE tier='active'"
+    ).fetchone()[0] or 0
+    files_active_30d = c.execute(
+        "SELECT COUNT(DISTINCT file) FROM entries WHERE tier='active' "
+        "AND last_accessed > datetime('now', '-30 days')"
+    ).fetchone()[0] or 0
+    relation_count = c.execute(
+        "SELECT COUNT(*) FROM relations"
+    ).fetchone()[0] or 0
+    oldest = c.execute(
+        "SELECT MIN(created_at) FROM entries WHERE grade >= 7 AND tier='active'"
+    ).fetchone()[0]
+    if oldest:
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+            s = str(oldest).replace("T", " ").rstrip("Z")
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d"):
+                try:
+                    dt = _dt.strptime(s, fmt).replace(tzinfo=_tz.utc)
+                    age_days = max(1, (datetime.now(timezone.utc) - dt).days)
+                    break
+                except ValueError:
+                    continue
+            else:
+                age_days = 1
+        except Exception:
+            age_days = 1
+    else:
+        age_days = 1
+    captures = c.execute(
+        "SELECT COUNT(*) FROM tool_events WHERE created_at > datetime('now', '-1 day')"
+    ).fetchone()[0] or 0
+    prompts = c.execute(
+        "SELECT COUNT(*) FROM user_prompts WHERE created_at > datetime('now', '-1 day')"
+    ).fetchone()[0] or 0
+
+    breadth = min(100, int(total_files / 40 * 100))
+    depth = min(100, int(total_entries / 200 * 100))
+    recency = min(100, int(files_active_30d / max(total_files, 1) * 100))
+    longevity = min(100, int(age_days / 180 * 100))
+    linkage = min(100, int(relation_count / max(total_files, 1) * 50))
+    weights = {"breadth": 0.18, "depth": 0.22, "recency": 0.25,
+               "longevity": 0.15, "linkage": 0.20}
+    score = round(breadth * weights["breadth"] + depth * weights["depth"]
+                  + recency * weights["recency"] + longevity * weights["longevity"]
+                  + linkage * weights["linkage"])
+
+    if not dry_run:
+        c.execute(
+            "INSERT OR REPLACE INTO score_history "
+            "(snapshot_date, score, breadth, depth, recency, longevity, linkage, "
+            "captures, prompts, entries_active, recorded_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+            (today, score, breadth, depth, recency, longevity, linkage,
+             captures, prompts, total_entries),
+        )
+        db.conn.commit()
+        stats["written"] = 1
+
+    _log.info(
+        "HISTORY_SNAPSHOT date=%s score=%d breadth=%d depth=%d recency=%d "
+        "longevity=%d linkage=%d active=%d",
+        today, score, breadth, depth, recency, longevity, linkage, total_entries,
+    )
+    return stats
+
+
 PHASES = {
     "dedup": phase_dedup,
     "dedup_cross_file": phase_dedup_cross_file,
@@ -992,6 +1080,7 @@ PHASES = {
     "purge": phase_purge,
     "scar_promote": phase_scar_promote,
     "kill_conditions": phase_kill_conditions,
+    "history_snapshot": phase_history_snapshot,
 }
 
 

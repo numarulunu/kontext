@@ -511,6 +511,33 @@ def _migration_19_memory_type(conn):
     """)
 
 
+def _migration_21_score_history(conn):
+    """Daily Kontext Score snapshots — one row per calendar day.
+
+    Replaces the dashboard's 14-day history chart which was projecting
+    today's values backward via Math.sin (synthetic). Populated by
+    dream.phase_history_snapshot on each dream cycle; dashboard reads
+    the trailing 14 rows. Date is PRIMARY KEY so repeated same-day
+    snapshots upsert rather than duplicating.
+    """
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS score_history (
+            snapshot_date TEXT PRIMARY KEY,
+            score INTEGER NOT NULL DEFAULT 0,
+            breadth INTEGER NOT NULL DEFAULT 0,
+            depth INTEGER NOT NULL DEFAULT 0,
+            recency INTEGER NOT NULL DEFAULT 0,
+            longevity INTEGER NOT NULL DEFAULT 0,
+            linkage INTEGER NOT NULL DEFAULT 0,
+            captures INTEGER NOT NULL DEFAULT 0,
+            prompts INTEGER NOT NULL DEFAULT 0,
+            entries_active INTEGER NOT NULL DEFAULT 0,
+            recorded_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_score_history_date ON score_history(snapshot_date);
+    """)
+
+
 def _migration_20_relation_typed_edges(conn):
     """Typed edges on `relations`: supersedes / contradicts / caused_by /
     instance_of / temporal_before / co_occurs.
@@ -562,6 +589,7 @@ MIGRATIONS = [
     (18, _migration_18_retrieval_evals),
     (19, _migration_19_memory_type),
     (20, _migration_20_relation_typed_edges),
+    (21, _migration_21_score_history),
 ]
 LATEST_SCHEMA_VERSION = max(v for v, _ in MIGRATIONS)
 

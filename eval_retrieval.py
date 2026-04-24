@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import logging
 import logging.handlers
 import os
@@ -380,6 +381,17 @@ def main() -> int:
         "--db", default=None,
         help="Override KONTEXT_DB_PATH for this run.",
     )
+    parser.add_argument(
+        "--baseline-jsonl", default=None,
+        help="Append one summary line per run to this JSONL file. Enables "
+             "regression detection via grep/jq — downstream cron can alert "
+             "when recall@5 drops more than 0.08 vs rolling mean.",
+    )
+    parser.add_argument(
+        "--regression-threshold", type=float, default=0.08,
+        help="Alert when recall@5 drops by more than this vs prior run "
+             "(default: 0.08). Only active with --baseline-jsonl.",
+    )
     args = parser.parse_args()
 
     mode = args.mode
@@ -505,6 +517,46 @@ def main() -> int:
     except Exception as e:
         print(f"WARNING: delta computation failed: {e}", file=sys.stderr)
         _log.warning(f"DELTA_FAIL: {e}")
+        delta = None
+
+    # Append regression-tracking JSONL line if requested.
+    if args.baseline_jsonl:
+        try:
+            line = {
+                "ts": ts,
+                "run_id": ts,
+                "mode": mode,
+                "rank": args.rank,
+                "n": len(rows),
+                "recall_at_3": round(_mean([r["recall_at_3"] for r in rows]), 4),
+                "recall_at_5": round(_mean([r["recall_at_5"] for r in rows]), 4),
+                "mrr":          round(_mean([r["mrr"] for r in rows]), 4),
+                "latency_ms":   round(_mean([r["latency_ms"] for r in rows]), 2),
+                "git_sha": git_sha,
+                "schema_version": schema_version,
+            }
+            alert = False
+            reason = None
+            if delta and delta.get("prior_run_id"):
+                line["prior_run_id"] = delta["prior_run_id"]
+                line["recall_at_5_delta"] = round(delta.get("recall_at_5_delta", 0.0), 4)
+                if line["recall_at_5_delta"] < -abs(args.regression_threshold):
+                    alert = True
+                    reason = f"recall@5 dropped {line['recall_at_5_delta']:.3f} (threshold {args.regression_threshold})"
+            line["alert"] = alert
+            if reason:
+                line["alert_reason"] = reason
+            baseline_path = Path(args.baseline_jsonl).expanduser()
+            baseline_path.parent.mkdir(parents=True, exist_ok=True)
+            with baseline_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(line) + "\n")
+            print(f"Baseline appended: {baseline_path}")
+            if alert:
+                print(f"\n  REGRESSION ALERT: {reason}", file=sys.stderr)
+            _log.info(f"BASELINE_WRITE path={baseline_path} alert={alert}")
+        except Exception as e:
+            print(f"WARNING: baseline JSONL write failed: {e}", file=sys.stderr)
+            _log.warning(f"BASELINE_FAIL: {e}")
 
     return 0
 
